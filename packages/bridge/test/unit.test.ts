@@ -36,7 +36,8 @@ test("send requests: text, template, question, exactly one", () => {
     assert.equal(questionFallback(q.content.question), "Confirma a consulta de amanhã às 14h?\n1. Confirmo\n2. Remarcar");
   }
   assert.throws(() => SendRequest.parse({ to: "@ana" }));
-  assert.throws(() => SendRequest.parse({ to: "@ana", text: "oi", question: { text: "q", options: [{ id: "a", label: "a" }] } }));
+  assert.throws(() => SendRequest.parse({ to: "@ana", text: "oi", question: { text: "q", options: [{ id: "a", label: "a" }, { id: "b", label: "b" }] } }));
+  assert.throws(() => SendRequest.parse({ to: "@ana", question: { text: "q", options: [{ id: "a", label: "a" }] } }));
   const eleven = Array.from({ length: 11 }, (_, i) => ({ id: `o${i}`, label: `O${i}` }));
   assert.throws(() => SendRequest.parse({ to: "@ana", question: { text: "q", options: eleven } }));
   const dup = SendRequest.parse({ to: "x", question: { text: "Sobre o que é?", options: [{ id: "a", label: "Atraso" }, { id: "a", label: "Troca" }] } });

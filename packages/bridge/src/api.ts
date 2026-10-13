@@ -14,7 +14,7 @@ export type Option = z.infer<typeof Option>;
 /** A structured question: the customer taps one option. */
 export const Question = z.object({
   text: z.string().min(1).max(2000),
-  options: z.array(Option).min(1).max(10),
+  options: z.array(Option).min(2).max(10),
 });
 export type Question = z.infer<typeof Question>;
 

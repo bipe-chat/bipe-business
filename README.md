@@ -34,7 +34,7 @@ Content-Type: application/json
 - Send exactly one of:
   - `text`: a string.
   - `template`: `{ "name", "language", "params": [] }`, from the bridge's template registry. Utility and authentication only (ADR 0037). `params` fill `{1}`, `{2}`.
-  - `question`: `{ "text", "options": [{ "id", "label", "detail"? }] }`, 1 to 10 options (ADR 0081). The customer sees a single-choice poll.
+  - `question`: `{ "text", "options": [{ "id", "label", "detail"? }] }`, 2 to 10 options (ADR 0081). The customer sees a single-choice poll.
 - Answer: `{ "id": "<event ID>", "conversation": "<conversation ID>", "customer": "<Matrix ID>" }`.
 - Errors: `{ "error": { "code", "message" } }`. Codes: `unauthorized`, `invalid_request`, `unknown_handle`, `customer_must_write_first`, `unknown_template`, `invalid_question`, `not_found`, `internal`.
 
