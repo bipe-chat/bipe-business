@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   addTag,
-  buildInteractive,
+  buildQuestion,
   contactLabel,
   displayName,
   fillVariables,
@@ -17,8 +17,6 @@ import {
   readPollResponse,
   slashQuery,
   slugify,
-  titleLimit,
-  waWindowOpen,
 } from "../src/lib.ts";
 
 const TZ = "America/Sao_Paulo";
@@ -31,12 +29,6 @@ test("slugify and option ids", () => {
   assert.deepEqual(optionIds(["Sim", "sim", "Não", "SIM"]), ["sim", "sim-2", "nao", "sim-3"]);
 });
 
-test("title limits: 20 for buttons, 24 for list rows", () => {
-  assert.equal(titleLimit(2), 20);
-  assert.equal(titleLimit(3), 20);
-  assert.equal(titleLimit(4), 24);
-});
-
 test("question validation", () => {
   assert.deepEqual(questionProblems("Quer receber amanhã?", ["Sim", "Outro dia"]), []);
   assert.ok(questionProblems("", ["Sim", "Não"]).includes("Escreva a pergunta."));
@@ -44,30 +36,23 @@ test("question validation", () => {
   assert.ok(questionProblems("P?", Array.from({ length: 11 }, (_, i) => `Opção ${i}`)).includes("Coloque no máximo 10 opções."));
   assert.ok(questionProblems("P?", ["Sim", " "]).includes("Tem uma opção vazia."));
   assert.ok(questionProblems("P?", ["Sim", "sim"]).includes("Duas opções têm o mesmo texto."));
-  // 21 characters: too long for a button, fine for a list row.
-  const t21 = "a".repeat(21);
-  assert.ok(questionProblems("P?", ["Sim", t21]).includes("A opção 2 tem mais de 20 caracteres."));
-  assert.deepEqual(questionProblems("P?", ["Sim", "Não", "Talvez", t21]), []);
-  assert.ok(questionProblems("P?", ["Sim", "Não", "Talvez", "b".repeat(25)]).includes("A opção 4 tem mais de 24 caracteres."));
+  // One label limit: 40 characters, however many options.
+  assert.deepEqual(questionProblems("P?", ["Sim", "a".repeat(40)]), []);
+  assert.ok(questionProblems("P?", ["Sim", "a".repeat(41)]).includes("A opção 2 tem mais de 40 caracteres."));
+  assert.ok(questionProblems("P?", ["Sim", "Não", "Talvez", "b".repeat(41)]).includes("A opção 4 tem mais de 40 caracteres."));
+  assert.ok(questionProblems("a".repeat(2001), ["Sim", "Não"]).includes("A pergunta tem mais de 2000 caracteres."));
 });
 
-test("interactive object: buttons for 2 to 3 options, list for 4 to 10", () => {
-  assert.deepEqual(buildInteractive(" Quer receber amanhã? ", ["Sim", "Outro dia"]), {
-    type: "button",
-    body: { text: "Quer receber amanhã?" },
-    action: {
-      buttons: [
-        { type: "reply", reply: { id: "sim", title: "Sim" } },
-        { type: "reply", reply: { id: "outro-dia", title: "Outro dia" } },
-      ],
-    },
+test("question: trimmed text, labels, unique ids", () => {
+  assert.deepEqual(buildQuestion(" Quer receber amanhã? ", [" Sim ", "Outro dia"]), {
+    text: "Quer receber amanhã?",
+    options: [
+      { id: "sim", label: "Sim" },
+      { id: "outro-dia", label: "Outro dia" },
+    ],
   });
-  const list = buildInteractive("Qual horário?", ["Manhã", "Tarde", "Noite", "Tanto faz"]);
-  assert.equal(list.type, "list");
-  assert.ok(list.type === "list");
-  assert.equal(list.action.button, "Ver opções");
-  assert.equal(list.action.sections.length, 1);
-  assert.deepEqual(list.action.sections[0]!.rows.map((r) => r.id), ["manha", "tarde", "noite", "tanto-faz"]);
+  const q = buildQuestion("Qual horário?", ["Manhã", "Tarde", "Noite", "Tanto faz", "manhã"]);
+  assert.deepEqual(q.options.map((o) => o.id), ["manha", "tarde", "noite", "tanto-faz", "manha-2"]);
 });
 
 test("saved replies: variables and slash query", () => {
@@ -99,20 +84,16 @@ test("time in pt-BR", () => {
   assert.equal(formatDuration(120 * 60_000), "2 h");
   assert.equal(formatDuration(76 * 3_600_000), "3 d 4 h");
   assert.equal(formatDuration(null), "");
-  assert.equal(waWindowOpen(now - 3_600_000, now), true);
-  assert.equal(waWindowOpen(now - 25 * 3_600_000, now), false);
-  assert.equal(waWindowOpen(null, now), false);
 });
 
-test("contacts: a Bipe contact never shows a phone number", () => {
-  assert.equal(contactLabel("bipe", "@ana:bipe.net.br"), "@ana:bipe.net.br");
-  assert.equal(contactLabel("bipe", "5511987654321"), "");
-  assert.equal(contactLabel("bipe", "+55 11 98765-4321"), "");
-  assert.equal(contactLabel("whatsapp", "5511987654321"), "+55 11 98765-4321");
-  assert.equal(contactLabel("whatsapp", "551134567890"), "+55 11 3456-7890");
-  assert.equal(contactLabel("whatsapp", "14155550100"), "+14155550100");
-  assert.equal(displayName({ channel: "bipe", contact: "5511987654321", contact_name: null }), "Cliente");
-  assert.equal(displayName({ channel: "bipe", contact: "@ana:bipe.net.br", contact_name: " Ana " }), "Ana");
+test("contacts: a Matrix ID shows, a phone number never does", () => {
+  assert.equal(contactLabel("@ana:bipe.net.br"), "@ana:bipe.net.br");
+  assert.equal(contactLabel("5511987654321"), "");
+  assert.equal(contactLabel("+55 11 98765-4321"), "");
+  assert.equal(contactLabel("ana"), "");
+  assert.equal(displayName({ contact: "5511987654321", contact_name: null }), "Cliente");
+  assert.equal(displayName({ contact: "@ana:bipe.net.br", contact_name: null }), "@ana:bipe.net.br");
+  assert.equal(displayName({ contact: "@ana:bipe.net.br", contact_name: " Ana " }), "Ana");
 });
 
 test("polls: start and response, stable and unstable", () => {
@@ -128,14 +109,14 @@ test("polls: start and response, stable and unstable", () => {
     },
     body: "fallback",
   };
-  assert.deepEqual(readPoll(unstable), { question: "Quer receber amanhã?", answers: [{ id: "sim", title: "Sim" }, { id: "outro", title: "Outro dia" }] });
+  assert.deepEqual(readPoll(unstable), { question: "Quer receber amanhã?", answers: [{ id: "sim", label: "Sim" }, { id: "outro", label: "Outro dia" }] });
   const stable = {
     "m.poll": {
       question: { "m.text": [{ body: "Qual?" }] },
       answers: [{ "m.id": "a", "m.text": [{ mimetype: "text/html", body: "<b>A</b>" }, { body: "A" }] }],
     },
   };
-  assert.deepEqual(readPoll(stable), { question: "Qual?", answers: [{ id: "a", title: "A" }] });
+  assert.deepEqual(readPoll(stable), { question: "Qual?", answers: [{ id: "a", label: "A" }] });
   assert.equal(readPoll({ body: "oi" }), null);
   assert.deepEqual(readPollResponse({ "m.relates_to": { rel_type: "m.reference", event_id: "$q" }, "org.matrix.msc3381.poll.response": { answers: ["outro"] } }), { pollId: "$q", answers: ["outro"] });
   assert.deepEqual(readPollResponse({ "m.relates_to": { event_id: "$q" }, "m.selections": ["a"] }), { pollId: "$q", answers: ["a"] });

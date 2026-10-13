@@ -1,40 +1,27 @@
 // Pure helpers. No imports, no DOM: the tests run this file directly with Node.
 
-export type Channel = "bipe" | "whatsapp";
-export type Status = "open" | "waiting" | "solved" | "moved";
+export type Status = "open" | "waiting" | "solved";
 
 export const STATUS_LABEL: Record<Status, string> = {
   open: "Aberta",
   waiting: "Esperando cliente",
   solved: "Resolvida",
-  moved: "Continuou no Bipe",
 };
-
-export const CHANNEL_LABEL: Record<Channel, string> = { bipe: "Bipe", whatsapp: "WhatsApp" };
 
 // ------------------------------------------------------------------ structured questions
 
-/** Limits from the Cloud API shape the bridge checks (packages/bridge/src/cloudapi.ts). */
+/** Limits the bridge checks on a question (packages/bridge/src/api.ts). */
 export const QUESTION = {
   minOptions: 2,
   maxOptions: 10,
-  maxButtons: 3,
-  buttonTitle: 20,
-  rowTitle: 24,
-  buttonBody: 1024,
-  listBody: 4096,
-  idMax: 200,
-  listButton: "Ver opções",
+  label: 40,
+  text: 2000,
+  idMax: 100,
 } as const;
 
-/** Max option title length for a question with `count` options. */
-export function titleLimit(count: number): number {
-  return count <= QUESTION.maxButtons ? QUESTION.buttonTitle : QUESTION.rowTitle;
-}
-
 /** "Outro dia!" -> "outro-dia". Accents go, anything else becomes a dash. */
-export function slugify(title: string): string {
-  const s = title
+export function slugify(label: string): string {
+  const s = label
     .normalize("NFD")
     .replace(/\p{M}/gu, "")
     .toLowerCase()
@@ -44,10 +31,10 @@ export function slugify(title: string): string {
   return s || "opcao";
 }
 
-/** Option IDs from titles: slugified and unique ("sim", "sim-2"). */
-export function optionIds(titles: string[]): string[] {
+/** Option IDs from labels: slugified and unique ("sim", "sim-2"). */
+export function optionIds(labels: string[]): string[] {
   const seen = new Map<string, number>();
-  return titles.map((t) => {
+  return labels.map((t) => {
     const base = slugify(t);
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
@@ -60,42 +47,27 @@ export function questionProblems(text: string, options: string[]): string[] {
   const out: string[] = [];
   const opts = options.map((o) => o.trim());
   const body = text.trim();
-  const limit = titleLimit(opts.length);
-  const bodyMax = opts.length <= QUESTION.maxButtons ? QUESTION.buttonBody : QUESTION.listBody;
   if (!body) out.push("Escreva a pergunta.");
-  else if (body.length > bodyMax) out.push(`A pergunta tem mais de ${bodyMax} caracteres.`);
+  else if (body.length > QUESTION.text) out.push(`A pergunta tem mais de ${QUESTION.text} caracteres.`);
   if (opts.length < QUESTION.minOptions) out.push(`Coloque pelo menos ${QUESTION.minOptions} opções.`);
   if (opts.length > QUESTION.maxOptions) out.push(`Coloque no máximo ${QUESTION.maxOptions} opções.`);
   if (opts.some((o) => !o)) out.push("Tem uma opção vazia.");
   opts.forEach((o, i) => {
-    if (o.length > limit) out.push(`A opção ${i + 1} tem mais de ${limit} caracteres.`);
+    if (o.length > QUESTION.label) out.push(`A opção ${i + 1} tem mais de ${QUESTION.label} caracteres.`);
   });
   const lower = opts.filter(Boolean).map((o) => o.toLocaleLowerCase("pt-BR"));
   if (new Set(lower).size !== lower.length) out.push("Duas opções têm o mesmo texto.");
   return out;
 }
 
-export type InteractiveButton = {
-  type: "button";
-  body: { text: string };
-  action: { buttons: { type: "reply"; reply: { id: string; title: string } }[] };
-};
-export type InteractiveList = {
-  type: "list";
-  body: { text: string };
-  action: { button: string; sections: { rows: { id: string; title: string }[] }[] };
-};
-export type Interactive = InteractiveButton | InteractiveList;
+export type QuestionOption = { id: string; label: string; detail?: string };
+export type Question = { text: string; options: QuestionOption[] };
 
-/** The Cloud API interactive object: reply buttons for 2 to 3 options, a list for 4 to 10. */
-export function buildInteractive(text: string, options: string[]): Interactive {
-  const titles = options.map((o) => o.trim());
-  const ids = optionIds(titles);
-  const body = { text: text.trim() };
-  if (titles.length <= QUESTION.maxButtons) {
-    return { type: "button", body, action: { buttons: titles.map((title, i) => ({ type: "reply", reply: { id: ids[i]!, title } })) } };
-  }
-  return { type: "list", body, action: { button: QUESTION.listButton, sections: [{ rows: titles.map((title, i) => ({ id: ids[i]!, title })) }] } };
+/** The question the bridge sends: trimmed text, one option per label, IDs from the labels. */
+export function buildQuestion(text: string, options: string[]): Question {
+  const labels = options.map((o) => o.trim());
+  const ids = optionIds(labels);
+  return { text: text.trim(), options: labels.map((label, i) => ({ id: ids[i]!, label })) };
 }
 
 // ------------------------------------------------------------------ saved replies
@@ -164,35 +136,23 @@ export function formatDuration(ms: number | null | undefined): string {
   return h % 24 ? `${d} d ${h % 24} h` : `${d} d`;
 }
 
-/** WhatsApp takes free text only within 24 hours of the customer's last message. */
-export function waWindowOpen(lastInboundAt: number | null | undefined, now: number = Date.now()): boolean {
-  return !!lastInboundAt && now - lastInboundAt < DAY;
-}
-
 // ------------------------------------------------------------------ contacts
 
 /**
- * What the inbox shows as the contact. A Bipe contact is a Matrix ID, never a phone number
- * (ADR 0063): anything else on the Bipe channel is hidden.
+ * What the inbox shows as the contact. A contact is a Matrix ID, never a phone number
+ * (ADR 0015, ADR 0063): anything else is hidden.
  */
-export function contactLabel(channel: Channel, contact: string): string {
-  if (channel === "bipe") return /^@[^:\s]+:[^\s]+$/.test(contact) ? contact : "";
-  const d = contact.replace(/\D/g, "");
-  if (d.startsWith("55") && (d.length === 12 || d.length === 13)) {
-    const ddd = d.slice(2, 4);
-    const rest = d.slice(4);
-    return `+55 ${ddd} ${rest.slice(0, rest.length - 4)}-${rest.slice(-4)}`;
-  }
-  return d ? `+${d}` : contact;
+export function contactLabel(contact: string): string {
+  return /^@[^:\s]+:[^\s]+$/.test(contact) ? contact : "";
 }
 
-export function displayName(c: { channel: Channel; contact: string; contact_name: string | null }): string {
-  return c.contact_name?.trim() || contactLabel(c.channel, c.contact) || "Cliente";
+export function displayName(c: { contact: string; contact_name: string | null }): string {
+  return c.contact_name?.trim() || contactLabel(c.contact) || "Cliente";
 }
 
 // ------------------------------------------------------------------ Bipe polls (structured questions)
 
-export type Poll = { question: string; answers: { id: string; title: string }[] };
+export type Poll = { question: string; answers: { id: string; label: string }[] };
 
 function extText(v: unknown): string {
   if (typeof v === "string") return v;
@@ -214,7 +174,7 @@ export function readPoll(content: Record<string, any>): Poll | null {
   if (!start || typeof start !== "object") return null;
   const question = textOf(start.question);
   const answers = Array.isArray(start.answers)
-    ? start.answers.map((a: any) => ({ id: String(a?.id ?? a?.["m.id"] ?? ""), title: textOf(a) })).filter((a: { id: string }) => a.id)
+    ? start.answers.map((a: any) => ({ id: String(a?.id ?? a?.["m.id"] ?? ""), label: textOf(a) })).filter((a: { id: string }) => a.id)
     : [];
   return { question, answers };
 }
@@ -246,8 +206,6 @@ const AUDIT_LABEL: Record<string, string> = {
   "conversation.take": "Assumiu a conversa",
   "note.add": "Nota interna",
   "message.send": "Respondeu",
-  "linkcode.create": "Convite para o Bipe",
-  "linkcode.used": "Cliente continuou no Bipe",
 };
 
 export function auditLabel(action: string): string {

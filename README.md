@@ -1,6 +1,6 @@
 # bipe-business
 
-One inbox for Bipe and WhatsApp, run by the company. Decisions: ADRs 0069, 0078, 0079 and 0081 in `bipe-chat/bipe` (`docs/adr/`). Plan: `bipe/docs/business-track.md`.
+The company's Bipe inbox and API, run by the company. Decisions: ADRs 0069, 0078, 0079, 0081 and 0082 in `bipe-chat/bipe` (`docs/adr/`). Plan: `bipe/docs/business-track.md`.
 
 Status (13 October 2026): pilot slice. Not deployed anywhere.
 
@@ -8,7 +8,7 @@ Status (13 October 2026): pilot slice. Not deployed anywhere.
 
 | Package | What it does |
 |---|---|
-| `packages/bridge` | Runs on the company's server. Holds the company's Bipe account, signs agent devices, receives WhatsApp webhooks, accepts the Cloud API request shape, serves the inbox and its API. |
+| `packages/bridge` | Runs on the company's server. Holds the company's Bipe account, signs agent devices, serves the inbox, and serves the API for the company's own systems. |
 | `packages/inbox` | Web app for agents and managers. Each signed-in browser is a Matrix device of the company account, so Bipe chats are decrypted in the browser, never on Bipe's servers. |
 
 ## How the keys work (ADR 0078)
@@ -18,23 +18,43 @@ Status (13 October 2026): pilot slice. Not deployed anywhere.
 3. An agent signs in to the inbox. The bridge logs in a new device for that browser. The browser uploads its keys. The bridge signs the device and gives the browser the backup key, so the agent can read past chats.
 4. Removing an agent deletes that agent's devices.
 
-Bipe chat content is never written to the bridge's database. WhatsApp messages are, because WhatsApp keeps no history the inbox could read later.
+Chat content is never written to the bridge's database. It stays end-to-end encrypted in Matrix.
 
 ## The API for the company's own systems
 
-Same shape as Meta's Cloud API. Change the base URL and the token.
-
 ```
-POST https://<bridge>/v23.0/<phone-number-id>/messages
+POST https://<bridge>/v1/messages
 Authorization: Bearer <one of BRIDGE_API_TOKENS>
+Content-Type: application/json
+
+{ "to": "@ana", "text": "Seu pedido saiu para entrega." }
 ```
 
-- `<phone-number-id>` = your WhatsApp number ID: passed to Meta as is.
-- `<phone-number-id>` = `bipe` (`BIPE_PHONE_NUMBER_ID`): sent on Bipe. `to` is the customer's @handle, Matrix ID, room ID or inbox conversation ID. The customer must have written first (error `131047` otherwise).
-- Types: `text`, `template` (from the bridge's template registry: utility and authentication only), `interactive` (`button` with up to 3 reply buttons, or `list` with up to 10 rows).
-- On Bipe an `interactive` message becomes a single-choice poll (ADR 0081). The customer's tap comes back to `BRIDGE_WEBHOOK_URL` as a Cloud API `button_reply` or `list_reply` message, with `context.id` set to the question's message ID.
+- `to`: the customer's @handle, Matrix ID, room ID, or the inbox conversation ID. The customer must have written first (error `customer_must_write_first` otherwise).
+- Send exactly one of:
+  - `text`: a string.
+  - `template`: `{ "name", "language", "params": [] }`, from the bridge's template registry. Utility and authentication only (ADR 0037). `params` fill `{1}`, `{2}`.
+  - `question`: `{ "text", "options": [{ "id", "label", "detail"? }] }`, 1 to 10 options (ADR 0081). The customer sees a single-choice poll.
+- Answer: `{ "id": "<event ID>", "conversation": "<conversation ID>", "customer": "<Matrix ID>" }`.
+- Errors: `{ "error": { "code", "message" } }`. Codes: `unauthorized`, `invalid_request`, `unknown_handle`, `customer_must_write_first`, `unknown_template`, `invalid_question`, `not_found`, `internal`.
 
-Inbound messages from both channels go to `BRIDGE_WEBHOOK_URL` in the Cloud API webhook shape, signed with `X-Hub-Signature-256` (HMAC-SHA256 of the body with `BRIDGE_WEBHOOK_SECRET`). On Bipe, `messaging_product` is `bipe` and `wa_id` is the customer's Matrix ID.
+### Webhook
+
+Inbound events go to `BRIDGE_WEBHOOK_URL` as JSON:
+
+```
+{ "id": "<event ID>", "type": "message", "at": "2026-10-13T12:00:00.000Z",
+  "conversation": "<conversation ID>", "customer": { "id": "@ana:bipe.net.br", "name": "Ana" },
+  "text": "Meu pedido não chegou" }
+```
+
+A tap on a question has `"type": "answer"` and `"answer": { "question": "<event ID>", "option": "<id>", "label": "<label>" }` instead of `text`.
+
+Each request has the header `Bipe-Signature: t=<unix seconds>,v1=<hex>`. `v1` is HMAC-SHA256 of `<t>.<raw body>` with `BRIDGE_WEBHOOK_SECRET`. Check it, and refuse a `t` more than 5 minutes from your clock. The bridge retries after 1, 5 and 30 seconds on a network error, a 429 or a 5xx.
+
+### Templates
+
+`templates import <file.json>` reads a list of `{ "name", "language", "category", "body" }`. `name` uses a to z, 0 to 9 and `_`. `category` is `utility` or `authentication`; the bridge refuses anything else.
 
 ## Run it
 
@@ -48,9 +68,9 @@ BRIDGE_NEW_PASSWORD='…' docker run --rm --env-file .env -e BRIDGE_NEW_PASSWORD
 docker run -d --env-file .env -v bridge-data:/data -p 8080:8080 bipe-business-bridge
 ```
 
-Put HTTPS in front of port 8080. Point Meta's webhook at `https://<bridge>/webhooks/whatsapp` with `WA_VERIFY_TOKEN`.
+Put HTTPS in front of port 8080.
 
-Other CLI commands: `agent list`, `saved-replies import <file.csv>` (columns `shortcut,text`), `templates import <file.json>` (Meta's `message_templates` export; marketing is refused), `templates list`.
+Other CLI commands: `agent list`, `saved-replies import <file.csv>` (columns `shortcut,text`), `templates import <file.json>` (see Templates), `templates list`.
 
 ## Develop
 

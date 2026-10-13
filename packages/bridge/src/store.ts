@@ -2,19 +2,16 @@ import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { sha256 } from "./secrets.js";
 
-// The bridge's own records, on the company's server. Bipe chat content is never stored here:
-// it stays end-to-end encrypted in Matrix. WhatsApp messages are stored because WhatsApp has
-// no history the inbox could read later.
+// The bridge's own records, on the company's server. Chat content is never stored here:
+// it stays end-to-end encrypted in Matrix.
 
-export type Channel = "bipe" | "whatsapp";
-export type Status = "open" | "waiting" | "solved" | "moved";
+export type Status = "open" | "waiting" | "solved";
 export type Role = "agent" | "manager";
 
 export type Conversation = {
   id: string;
-  channel: Channel;
   customer_id: string;
-  external_id: string;
+  room_id: string;
   contact: string;
   contact_name: string | null;
   status: Status;
@@ -24,7 +21,6 @@ export type Conversation = {
   last_inbound_at: number | null;
   last_outbound_at: number | null;
   first_response_at: number | null;
-  moved_to: string | null;
 };
 
 export type Agent = {
@@ -41,32 +37,18 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY,
-  channel TEXT NOT NULL CHECK (channel IN ('bipe','whatsapp')),
   customer_id TEXT NOT NULL REFERENCES customers(id),
-  external_id TEXT NOT NULL,
+  room_id TEXT NOT NULL UNIQUE,
   contact TEXT NOT NULL,
   contact_name TEXT,
-  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','waiting','solved','moved')),
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','waiting','solved')),
   assignee_id TEXT REFERENCES agents(id),
   tags TEXT NOT NULL DEFAULT '[]',
   created_at INTEGER NOT NULL,
   last_inbound_at INTEGER,
   last_outbound_at INTEGER,
-  first_response_at INTEGER,
-  moved_to TEXT,
-  UNIQUE (channel, external_id)
+  first_response_at INTEGER
 );
-CREATE TABLE IF NOT EXISTS wa_messages (
-  id TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id),
-  direction TEXT NOT NULL CHECK (direction IN ('in','out')),
-  type TEXT NOT NULL,
-  body TEXT,
-  agent_id TEXT,
-  status TEXT,
-  at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS wa_messages_conv ON wa_messages (conversation_id, at);
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
@@ -106,15 +88,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   agent_id TEXT NOT NULL REFERENCES agents(id),
   device_id TEXT NOT NULL,
   expires_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS link_codes (
-  code TEXT PRIMARY KEY,
-  conversation_id TEXT NOT NULL REFERENCES conversations(id),
-  created_by TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  used_at INTEGER,
-  used_by_conversation TEXT
 );
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,10 +139,10 @@ export class Store {
   }
 
   // --- conversations
-  /** Finds or opens the conversation for a contact on a channel. A solved one opens again. */
-  upsertConversation(channel: Channel, externalId: string, contact: string, contactName: string | null): { conv: Conversation; created: boolean } {
+  /** Finds or opens the conversation for a customer's room. */
+  upsertConversation(roomId: string, contact: string, contactName: string | null): { conv: Conversation; created: boolean } {
     return this.tx(() => {
-      const found = toConversation(this.db.prepare("SELECT * FROM conversations WHERE channel = ? AND external_id = ?").get(channel, externalId) as Row);
+      const found = this.conversationByRoom(roomId);
       if (found) {
         if (contactName && contactName !== found.contact_name) {
           this.db.prepare("UPDATE conversations SET contact_name = ? WHERE id = ?").run(contactName, found.id);
@@ -182,8 +155,8 @@ export class Store {
       const at = this.now();
       this.db.prepare("INSERT INTO customers (id, created_at) VALUES (?, ?)").run(customerId, at);
       this.db
-        .prepare("INSERT INTO conversations (id, channel, customer_id, external_id, contact, contact_name, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(id, channel, customerId, externalId, contact, contactName, at);
+        .prepare("INSERT INTO conversations (id, customer_id, room_id, contact, contact_name, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(id, customerId, roomId, contact, contactName, at);
       return { conv: this.conversation(id)!, created: true };
     });
   }
@@ -192,16 +165,15 @@ export class Store {
     return toConversation(this.db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as Row);
   }
 
-  conversationByExternal(channel: Channel, externalId: string): Conversation | undefined {
-    return toConversation(this.db.prepare("SELECT * FROM conversations WHERE channel = ? AND external_id = ?").get(channel, externalId) as Row);
+  conversationByRoom(roomId: string): Conversation | undefined {
+    return toConversation(this.db.prepare("SELECT * FROM conversations WHERE room_id = ?").get(roomId) as Row);
   }
 
-  listConversations(f: { status?: Status; statuses?: Status[]; assigneeId?: string | null; channel?: Channel; customerId?: string; limit?: number }): Conversation[] {
+  listConversations(f: { status?: Status; statuses?: Status[]; assigneeId?: string | null; customerId?: string; limit?: number }): Conversation[] {
     const where: string[] = [];
     const args: (string | number | null)[] = [];
     if (f.status) (where.push("status = ?"), args.push(f.status));
     if (f.statuses?.length) (where.push(`status IN (${f.statuses.map(() => "?").join(",")})`), args.push(...f.statuses));
-    if (f.channel) (where.push("channel = ?"), args.push(f.channel));
     if (f.customerId) (where.push("customer_id = ?"), args.push(f.customerId));
     if (f.assigneeId === null) where.push("assignee_id IS NULL");
     else if (f.assigneeId) (where.push("assignee_id = ?"), args.push(f.assigneeId));
@@ -213,8 +185,8 @@ export class Store {
 
   markInbound(id: string) {
     const at = this.now();
-    // A new customer message opens a solved or waiting chat again. A moved chat stays moved.
-    this.db.prepare("UPDATE conversations SET last_inbound_at = ?, status = CASE WHEN status = 'moved' THEN 'moved' ELSE 'open' END WHERE id = ?").run(at, id);
+    // A new customer message opens a solved or waiting chat again.
+    this.db.prepare("UPDATE conversations SET last_inbound_at = ?, status = 'open' WHERE id = ?").run(at, id);
   }
 
   markOutbound(id: string) {
@@ -232,35 +204,6 @@ export class Store {
     };
     this.db.prepare("UPDATE conversations SET status = ?, assignee_id = ?, tags = ? WHERE id = ?").run(next.status, next.assignee_id, next.tags, id);
     return this.conversation(id);
-  }
-
-  /** A customer used a link code: both chats belong to one customer; the old one is moved. */
-  joinConversations(fromId: string, toId: string) {
-    this.tx(() => {
-      const from = this.conversation(fromId);
-      const to = this.conversation(toId);
-      if (!from || !to) throw new Error("conversation not found");
-      const oldCustomer = to.customer_id;
-      this.db.prepare("UPDATE conversations SET customer_id = ? WHERE customer_id = ?").run(from.customer_id, oldCustomer);
-      this.db
-        .prepare("UPDATE conversations SET assignee_id = COALESCE(assignee_id, ?), tags = ?, contact_name = COALESCE(contact_name, ?) WHERE id = ?")
-        .run(from.assignee_id, JSON.stringify([...new Set([...from.tags, ...to.tags])]), from.contact_name, toId);
-      this.db.prepare("UPDATE conversations SET status = 'moved', moved_to = ? WHERE id = ?").run(toId, fromId);
-      if (oldCustomer !== from.customer_id) this.db.prepare("DELETE FROM customers WHERE id = ?").run(oldCustomer);
-    });
-  }
-
-  // --- WhatsApp messages
-  addWaMessage(m: { id: string; conversation_id: string; direction: "in" | "out"; type: string; body: string | null; agent_id?: string | null; status?: string | null; at?: number }) {
-    this.db
-      .prepare("INSERT OR IGNORE INTO wa_messages (id, conversation_id, direction, type, body, agent_id, status, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(m.id, m.conversation_id, m.direction, m.type, m.body, m.agent_id ?? null, m.status ?? null, m.at ?? this.now());
-  }
-  setWaStatus(id: string, status: string) {
-    this.db.prepare("UPDATE wa_messages SET status = ? WHERE id = ?").run(status, id);
-  }
-  waMessages(conversationId: string) {
-    return this.db.prepare("SELECT * FROM wa_messages WHERE conversation_id = ? ORDER BY at, rowid").all(conversationId) as Row[];
   }
 
   // --- notes
@@ -347,23 +290,6 @@ export class Store {
     this.db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(sha256(token));
   }
 
-  // --- link codes
-  addLinkCode(code: string, conversationId: string, agentId: string, days = 7) {
-    const at = this.now();
-    this.db.prepare("INSERT INTO link_codes (code, conversation_id, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)").run(code, conversationId, agentId, at, at + days * 86_400_000);
-  }
-  /** Uses a code once. Returns the conversation it points at, or undefined. */
-  useLinkCode(code: string, byConversation: string): string | undefined {
-    return this.tx(() => {
-      const r = this.db.prepare("SELECT conversation_id, expires_at, used_at FROM link_codes WHERE code = ?").get(code) as
-        | { conversation_id: string; expires_at: number; used_at: number | null }
-        | undefined;
-      if (!r || r.used_at !== null || r.expires_at < this.now()) return undefined;
-      this.db.prepare("UPDATE link_codes SET used_at = ?, used_by_conversation = ? WHERE code = ?").run(this.now(), byConversation, code);
-      return r.conversation_id;
-    });
-  }
-
   // --- audit
   audit(action: string, opts: { agentId?: string | null; conversationId?: string | null; detail?: string | null } = {}) {
     this.db
@@ -375,14 +301,11 @@ export class Store {
   }
 
   // --- numbers for managers. Counted from bridge records, never from content.
-  // newByChannel, linkCodes and medianFirstResponseMs cover the window; byStatus and perAgent are the state now.
+  // newConversations and medianFirstResponseMs cover the window; byStatus and perAgent are the state now.
   stats(sinceMs: number) {
     const since = this.now() - sinceMs;
-    const byChannel = this.db
-      .prepare("SELECT channel, COUNT(*) AS n FROM conversations WHERE created_at >= ? GROUP BY channel")
-      .all(since) as { channel: Channel; n: number }[];
+    const created = this.db.prepare("SELECT COUNT(*) AS n FROM conversations WHERE created_at >= ?").get(since) as { n: number };
     const open = this.db.prepare("SELECT status, COUNT(*) AS n FROM conversations GROUP BY status").all() as { status: Status; n: number }[];
-    const codes = this.db.prepare("SELECT COUNT(*) AS made, SUM(used_at IS NOT NULL) AS used FROM link_codes WHERE created_at >= ?").get(since) as { made: number; used: number | null };
     const firsts = (
       this.db.prepare("SELECT first_response_at - created_at AS d FROM conversations WHERE first_response_at IS NOT NULL AND created_at >= ? ORDER BY d").all(since) as { d: number }[]
     ).map((r) => r.d);
@@ -391,9 +314,8 @@ export class Store {
       .prepare("SELECT a.id, a.name, COUNT(c.id) AS open FROM agents a LEFT JOIN conversations c ON c.assignee_id = a.id AND c.status IN ('open','waiting') WHERE a.active = 1 GROUP BY a.id ORDER BY a.name")
       .all() as Row[];
     return {
-      newByChannel: Object.fromEntries(byChannel.map((r) => [r.channel, r.n])),
+      newConversations: created.n,
       byStatus: Object.fromEntries(open.map((r) => [r.status, r.n])),
-      linkCodes: { made: codes.made, used: codes.used ?? 0 },
       medianFirstResponseMs: median,
       perAgent,
     };

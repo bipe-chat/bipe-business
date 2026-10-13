@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
-import { apiError, Interactive, SendRequest } from "./cloudapi.js";
-import { checkHubSignature, checkPassword, hashPassword, newToken, safeEqual } from "./secrets.js";
+import { apiError, Content, SendRequest } from "./api.js";
+import { checkPassword, hashPassword, newToken, safeEqual } from "./secrets.js";
 import { Bridge, SendError } from "./service.js";
 import type { Agent, Status } from "./store.js";
 
@@ -30,19 +30,15 @@ const Patch = z.object({
   tags: z.array(z.string().min(1).max(40)).max(20).optional(),
 });
 const Note = z.object({ body: z.string().min(1).max(4000) });
-const AgentMessage = z.union([
-  z.object({ text: z.string().min(1).max(4096) }),
-  z.object({ interactive: z.any() }),
-  z.object({ template: z.object({ name: z.string().min(1).max(512), language: z.string().min(2).max(15), params: z.array(z.string().max(1024)).max(20).default([]) }) }),
-]);
 const SavedReply = z.object({ shortcut: z.string().min(1).max(40).regex(/^[a-z0-9_-]+$/), body: z.string().min(1).max(4096) });
 const NewAgent = z.object({ email: z.string().email().max(254), name: z.string().min(1).max(80), role: z.enum(["agent", "manager"]), password: z.string().min(12).max(512) });
 
 function sendErr(c: Context, e: unknown) {
-  if (e instanceof SendError) return c.json((e as any).meta ?? apiError(e.code, e.message), e.status as any);
-  if (e instanceof z.ZodError) return c.json(apiError(100, "invalid parameter", e.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")), 400);
+  if (e instanceof SendError) return c.json(apiError(e.code, e.message), e.status as any);
+  if (e instanceof z.ZodError) return c.json(apiError("invalid_request", e.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ")), 400);
+  if (e instanceof SyntaxError) return c.json(apiError("invalid_request", "body is not JSON"), 400);
   console.error("bridge: request failed:", (e as Error).message);
-  return c.json(apiError(1, "internal error"), 500);
+  return c.json(apiError("internal", "internal error"), 500);
 }
 
 export function createApp(bridge: Bridge) {
@@ -54,40 +50,14 @@ export function createApp(bridge: Bridge) {
 
   app.get("/health", (c) => c.json({ ok: true }));
 
-  // ------------------------------------------------------------ Meta webhook (WhatsApp channel)
-  app.get("/webhooks/whatsapp", (c) => {
-    const wa = cfg.whatsapp;
-    if (!wa) return c.text("not found", 404);
-    const mode = c.req.query("hub.mode");
-    const token = c.req.query("hub.verify_token") ?? "";
-    const challenge = c.req.query("hub.challenge") ?? "";
-    if (mode === "subscribe" && safeEqual(token, wa.verifyToken)) return c.text(challenge);
-    return c.text("forbidden", 403);
-  });
-
-  app.post("/webhooks/whatsapp", async (c) => {
-    const wa = cfg.whatsapp;
-    if (!wa) return c.text("not found", 404);
-    const raw = Buffer.from(await c.req.arrayBuffer());
-    if (!checkHubSignature(wa.appSecret, raw, c.req.header("x-hub-signature-256"))) return c.text("bad signature", 401);
-    let payload: unknown;
-    try {
-      payload = JSON.parse(raw.toString("utf8"));
-    } catch {
-      return c.text("bad json", 400);
-    }
-    await bridge.onWhatsApp(payload);
-    return c.text("ok");
-  });
-
-  // ------------------------------------------------------------ Cloud API shape (company systems)
-  app.post("/:version/:phoneNumberId/messages", async (c) => {
+  // ------------------------------------------------------------ API for the company's own systems (ADR 0082)
+  app.post("/v1/messages", async (c) => {
     const auth = c.req.header("authorization") ?? "";
     const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    if (!token || !cfg.apiTokens.some((t) => safeEqual(t, token))) return c.json(apiError(190, "invalid access token"), 401);
+    if (!token || !cfg.apiTokens.some((t) => safeEqual(t, token))) return c.json(apiError("unauthorized", "invalid access token"), 401);
     try {
       const req = SendRequest.parse(await c.req.json());
-      return c.json(await bridge.send(c.req.param("phoneNumberId"), req));
+      return c.json(await bridge.send(req));
     } catch (e) {
       return sendErr(c, e);
     }
@@ -115,7 +85,7 @@ export function createApp(bridge: Bridge) {
       token,
       agent: { id: agent.id, name: agent.name, email: agent.email, role: agent.role },
       matrix: { homeserverUrl: cfg.matrix.homeserverUrl, userId: m.userId, deviceId: m.deviceId, accessToken: m.accessToken },
-      company: { handle: cfg.matrix.handle, whatsapp: Boolean(cfg.whatsapp) },
+      company: { handle: cfg.matrix.handle },
     });
   });
 
@@ -157,16 +127,15 @@ export function createApp(bridge: Bridge) {
 
   app.get("/inbox/me", (c) => {
     const a = c.get("agent");
-    return c.json({ agent: { id: a.id, name: a.name, email: a.email, role: a.role }, company: { handle: cfg.matrix.handle, whatsapp: Boolean(cfg.whatsapp) } });
+    return c.json({ agent: { id: a.id, name: a.name, email: a.email, role: a.role }, company: { handle: cfg.matrix.handle } });
   });
 
   // ------------------------------------------------------------ inbox: conversations
   app.get("/inbox/conversations", (c) => {
     const q = c.req.query();
-    const statuses = (q.status ?? "").split(",").filter((x): x is Status => ["open", "waiting", "solved", "moved"].includes(x));
-    const channel = (["bipe", "whatsapp"] as const).find((s) => s === q.channel);
+    const statuses = (q.status ?? "").split(",").filter((x): x is Status => ["open", "waiting", "solved"].includes(x));
     const assigneeId = q.assignee === "me" ? c.get("agent").id : q.assignee === "none" ? null : q.assignee || undefined;
-    return c.json({ conversations: store.listConversations({ statuses, channel, assigneeId }) });
+    return c.json({ conversations: store.listConversations({ statuses, assigneeId }) });
   });
 
   app.get("/inbox/conversations/:id", (c) => {
@@ -180,7 +149,6 @@ export function createApp(bridge: Bridge) {
     return c.json({
       conversation: conv,
       notes: store.notes(conv.id),
-      whatsappMessages: conv.channel === "whatsapp" ? store.waMessages(conv.id) : [],
       sameCustomer: store.listConversations({ customerId: conv.customer_id }).filter((x) => x.id !== conv.id),
     });
   });
@@ -223,8 +191,8 @@ export function createApp(bridge: Bridge) {
 
   app.post("/inbox/conversations/:id/messages", async (c) => {
     try {
-      const m = AgentMessage.parse(await c.req.json());
-      const out = await bridge.agentSend(c.req.param("id"), c.get("agent").id, "text" in m ? { text: m.text } : "template" in m ? { template: m.template } : { interactive: Interactive.parse(m.interactive) });
+      const m = Content.parse(await c.req.json());
+      const out = await bridge.agentSend(c.req.param("id"), c.get("agent").id, m);
       return c.json(out);
     } catch (e) {
       return sendErr(c, e);
@@ -236,16 +204,8 @@ export function createApp(bridge: Bridge) {
     const conv = store.conversation(c.req.param("id"));
     if (!conv) return c.json({ error: "not_found" }, 404);
     store.markOutbound(conv.id);
-    store.audit("message.send", { agentId: c.get("agent").id, conversationId: conv.id, detail: "bipe" });
+    store.audit("message.send", { agentId: c.get("agent").id, conversationId: conv.id });
     return c.json({ ok: true });
-  });
-
-  app.post("/inbox/conversations/:id/link-code", (c) => {
-    try {
-      return c.json(bridge.makeLinkCode(c.req.param("id"), c.get("agent").id));
-    } catch (e) {
-      return sendErr(c, e);
-    }
   });
 
   // ------------------------------------------------------------ inbox: saved replies, templates

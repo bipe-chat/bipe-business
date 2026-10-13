@@ -19,47 +19,25 @@ export const sha256 = (s: string) => createHash("sha256").update(s).digest("hex"
 
 export const newToken = () => randomBytes(32).toString("base64url");
 
-/** Meta's webhook signature: `sha256=` + HMAC-SHA256 of the raw body with the app secret. */
-export function hubSignature(secret: string, rawBody: string | Buffer): string {
-  return "sha256=" + createHmac("sha256", secret).update(rawBody).digest("hex");
+/**
+ * Signature for the company's webhook: `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">`.
+ * The timestamp lets the receiver refuse replays.
+ */
+export function webhookSignature(secret: string, body: string, t: number): string {
+  return `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${body}`).digest("hex")}`;
 }
 
-export function checkHubSignature(secret: string, rawBody: string | Buffer, header: string | undefined): boolean {
-  if (!header) return false;
-  const want = Buffer.from(hubSignature(secret, rawBody));
-  const got = Buffer.from(header);
-  return want.length === got.length && timingSafeEqual(want, got);
+/** Checks a `Bipe-Signature` header. `maxAgeS` limits replays. */
+export function checkWebhookSignature(secret: string, body: string, header: string | undefined, nowS: number, maxAgeS = 300): boolean {
+  const m = /^t=(\d+),v1=([0-9a-f]{64})$/.exec(header ?? "");
+  if (!m) return false;
+  const t = Number(m[1]);
+  if (Math.abs(nowS - t) > maxAgeS) return false;
+  return safeEqual(webhookSignature(secret, body, t), header!);
 }
 
 export function safeEqual(a: string, b: string): boolean {
   const x = Buffer.from(a);
   const y = Buffer.from(b);
   return x.length === y.length && timingSafeEqual(x, y);
-}
-
-// Link codes: 8 characters of Crockford base32, shown as XXXX-XXXX. No I, L, O, U.
-const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-export function newLinkCode(): string {
-  const bytes = randomBytes(8);
-  let s = "";
-  for (const b of bytes) s += ALPHABET[b & 31];
-  return `${s.slice(0, 4)}-${s.slice(4)}`;
-}
-
-/** Normalise what a person typed: case, separators, and the letters people confuse. */
-export function normaliseLinkCode(input: string): string | null {
-  const s = input
-    .toUpperCase()
-    .replace(/[\s-]/g, "")
-    .replace(/[IL]/g, "1")
-    .replace(/O/g, "0");
-  if (!/^[0-9A-HJKMNP-TV-Z]{8}$/.test(s)) return null;
-  return `${s.slice(0, 4)}-${s.slice(4)}`;
-}
-
-/** Finds `continuar XXXX-XXXX` in a customer's message (the link page pre-fills it). */
-export function findLinkCode(text: string): string | null {
-  const m = /continuar\s+([0-9a-z]{4}[\s-]?[0-9a-z]{4})\b/i.exec(text);
-  return m?.[1] ? normaliseLinkCode(m[1]) : null;
 }

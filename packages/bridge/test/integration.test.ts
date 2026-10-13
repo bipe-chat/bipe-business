@@ -82,7 +82,7 @@ test("bridge end to end: customer writes, company answers, question and tap, age
     return new Response("ok");
   }) as unknown as typeof fetch;
   const side = new BipeSide(cfg.matrix, store);
-  const bridge = new Bridge(cfg, store, side, null, fakeFetch);
+  const bridge = new Bridge(cfg, store, side, fakeFetch);
   await side.start();
   const app = createApp(bridge);
   const api = (path: string, json?: unknown, token = "tok") =>
@@ -96,31 +96,25 @@ test("bridge end to end: customer writes, company answers, question and tap, age
       invite: [cfg.matrix.userId],
       initial_state: [{ type: "m.room.encryption", state_key: "", content: { algorithm: "m.megolm.v1.aes-sha2" } }],
     });
-    const conv = await waitFor("conversation", () => store.conversationByExternal("bipe", room_id));
+    const conv = await waitFor("conversation", () => store.conversationByRoom(room_id));
     await waitFor("bridge joined", () => ana.getRoom(room_id)?.getMember(cfg.matrix.userId)?.membership === "join");
     await ana.sendTextMessage(room_id, "Oi, meu pedido 123 não chegou");
-    await waitFor("webhook text", () => hooks.find((h) => h.entry[0].changes[0].value.messages[0].text?.body === "Oi, meu pedido 123 não chegou"));
+    await waitFor("webhook text", () => hooks.find((h) => h.type === "message" && h.text === "Oi, meu pedido 123 não chegou"));
     assert.ok(store.conversation(conv.id)!.last_inbound_at);
 
-    // 4. The company's system answers through the Cloud API shape.
-    const r = await api("/v1/bipe/messages", { messaging_product: "bipe", to: `@${customer}:${host}`, type: "text", text: { body: "Oi Ana, já vamos ver." } });
+    // 4. The company's system answers through the API.
+    const r = await api("/v1/messages", { to: `@${customer}:${host}`, text: "Oi Ana, já vamos ver." });
     assert.equal(r.status, 200, await r.clone().text());
     await waitFor("customer reads reply", () => texts(ana, room_id).includes("Oi Ana, já vamos ver."));
 
-    // 5. A structured question (ADR 0079); the customer taps an option.
-    const q = await api("/v1/bipe/messages", {
-      messaging_product: "bipe",
-      to: room_id,
-      type: "interactive",
-      interactive: { type: "button", body: { text: "Quer receber amanhã?" }, action: { buttons: [{ type: "reply", reply: { id: "sim", title: "Sim" } }, { type: "reply", reply: { id: "outro", title: "Outro dia" } }] } },
-    });
-    const qid: string = (await q.json()).messages[0].id;
+    // 5. A structured question (ADR 0081); the customer taps an option.
+    const q = await api("/v1/messages", { to: room_id, question: { text: "Quer receber amanhã?", options: [{ id: "sim", label: "Sim" }, { id: "outro", label: "Outro dia" }] } });
+    const qid: string = (await q.json()).id;
     const poll = await waitFor("poll arrives", () => ana.getRoom(room_id)?.getLiveTimeline().getEvents().find((e) => e.getId() === qid && e.getType().endsWith("poll.start")));
     assert.equal(poll.getContent()["org.matrix.msc3381.poll.start"].answers[1].id, "outro");
     await ana.sendEvent(room_id, "org.matrix.msc3381.poll.response" as any, { "m.relates_to": { rel_type: "m.reference", event_id: qid }, "org.matrix.msc3381.poll.response": { answers: ["outro"] } } as any);
-    const tap = await waitFor("webhook tap", () => hooks.find((h) => h.entry[0].changes[0].value.messages[0].type === "interactive"));
-    assert.deepEqual(tap.entry[0].changes[0].value.messages[0].interactive, { type: "button_reply", button_reply: { id: "outro", title: "Outro dia" } });
-    assert.equal(tap.entry[0].changes[0].value.messages[0].context.id, qid);
+    const tap = await waitFor("webhook tap", () => hooks.find((h) => h.type === "answer"));
+    assert.deepEqual(tap.answer, { question: qid, option: "outro", label: "Outro dia" });
 
     // 6. An agent signs in: new device, signed by the bridge, gets the backup key, reads history.
     store.addAgent({ email: "bia@loja.test", name: "Bia", role: "agent", password_hash: hashPassword("123456789012") });
@@ -154,16 +148,7 @@ test("bridge end to end: customer writes, company answers, question and tap, age
     await bia.sendTextMessage(room_id, "Aqui é a Bia. Seu pedido sai hoje.");
     await waitFor("customer reads agent", () => texts(ana, room_id).includes("Aqui é a Bia. Seu pedido sai hoje."));
 
-    // 8. A link code from a WhatsApp chat moves the customer to this Bipe chat.
-    const wa = store.upsertConversation("whatsapp", "5511999", "5511999", "Ana").conv;
-    const agentId = store.agentByEmail("bia@loja.test")!.id;
-    store.updateConversation(wa.id, { assignee_id: agentId });
-    const code = bridge.makeLinkCode(wa.id, agentId);
-    await ana.sendTextMessage(room_id, `continuar ${code.code}`);
-    await waitFor("chats joined", () => store.conversation(wa.id)!.status === "moved");
-    assert.equal(store.conversation(conv.id)!.assignee_id, agentId);
-
-    // 9. Signing out deletes the device.
+    // 8. Signing out deletes the device.
     await api("/inbox/logout", {}, login.token);
     const devices = await side.client.getDevices();
     assert.ok(!devices.devices.some((d) => d.device_id === login.matrix.deviceId));

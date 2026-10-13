@@ -1,14 +1,13 @@
 import { useState, type FormEvent } from "react";
 import { api, errorText, type Detail, type Note } from "./api.ts";
 import { contactLabel, displayName, formatDateTime, formatWhen, STATUS_LABEL } from "./lib.ts";
-import { ChannelPill } from "./ui.tsx";
 
 export function CustomerCard({ detail, onNotes, open }: { detail: Detail; onNotes: (n: Note[]) => void; open: (id: string) => void }) {
   const conv = detail.conversation;
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const contact = contactLabel(conv.channel, conv.contact);
+  const contact = contactLabel(conv.contact);
 
   const addNote = async (e: FormEvent) => {
     e.preventDefault();
@@ -31,7 +30,7 @@ export function CustomerCard({ detail, onNotes, open }: { detail: Detail; onNote
         <h2>{displayName(conv)}</h2>
         {contact && (
           <p className="contact">
-            <span className="muted small">{conv.channel === "bipe" ? "Bipe" : "Número no WhatsApp"}</span>
+            <span className="muted small">Bipe</span>
             <br />
             <span className="mono">{contact}</span>
           </p>
@@ -39,22 +38,21 @@ export function CustomerCard({ detail, onNotes, open }: { detail: Detail; onNote
         <p className="muted small">Cliente desde {formatDateTime(conv.created_at)}</p>
       </section>
 
-      <section>
-        <h3>Canais</h3>
-        <ul className="channels">
-          <li>
-            <ChannelPill channel={conv.channel} /> <span className="muted small">esta conversa</span>
-          </li>
-          {detail.sameCustomer.map((c) => (
-            <li key={c.id}>
-              <button type="button" className="link" onClick={() => open(c.id)}>
-                <ChannelPill channel={c.channel} /> {STATUS_LABEL[c.status]}
-                {c.last_inbound_at ? `, ${formatWhen(c.last_inbound_at)}` : ""}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </section>
+      {detail.sameCustomer.length > 0 && (
+        <section>
+          <h3>Outras conversas</h3>
+          <ul className="others">
+            {detail.sameCustomer.map((c) => (
+              <li key={c.id}>
+                <button type="button" className="link" onClick={() => open(c.id)}>
+                  {STATUS_LABEL[c.status]}
+                  {c.last_inbound_at ? `, ${formatWhen(c.last_inbound_at)}` : ""}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {conv.tags.length > 0 && (
         <section>

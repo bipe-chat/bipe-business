@@ -1,10 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { CHANNEL_LABEL, type Channel } from "./lib.ts";
 import { bipe } from "./matrix.ts";
-
-export function ChannelPill({ channel }: { channel: Channel }) {
-  return <span className={`pill pill-${channel}`}>{CHANNEL_LABEL[channel]}</span>;
-}
 
 /** Re-renders when the Bipe connection changes (state, timeline, decryption). */
 export function useBipe() {
@@ -51,7 +46,7 @@ export function BipeStatus() {
       : b.state === "offline"
         ? "Sem conexão com o Bipe. Tentando de novo…"
         : b.state === "failed"
-          ? "O Bipe não conectou. O WhatsApp segue funcionando."
+          ? "O Bipe não conectou. Recarregue a página para tentar de novo."
           : "Conectando ao Bipe…";
   const tone = b.state === "ready" ? (b.keys === "failed" ? "warn" : "ok") : b.state === "connecting" ? "wait" : "warn";
   return (

@@ -1,7 +1,7 @@
 import * as sdk from "matrix-js-sdk";
 import { decodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/index.js";
 import type { Config } from "./config.js";
-import type { Option } from "./cloudapi.js";
+import type { Option } from "./api.js";
 
 // The Bipe side of the bridge (ADR 0035, ADR 0078).
 // One company account. The bridge is one device of it. Each inbox agent is another device.
@@ -199,13 +199,12 @@ export class BipeSide {
   }
 
   /** A structured question as a single-choice poll (ADR 0081), with a numbered text fallback. */
-  async sendQuestion(roomId: string, question: string, options: Option[]): Promise<string> {
-    const fallback = [question, ...options.map((o, i) => `${i + 1}. ${o.title}`)].join("\n");
+  async sendQuestion(roomId: string, question: string, options: Option[], fallback: string): Promise<string> {
     const start = {
       kind: "org.matrix.msc3381.poll.disclosed",
       max_selections: 1,
       question: { "org.matrix.msc1767.text": question, body: question, msgtype: "m.text" },
-      answers: options.map((o) => ({ id: o.id, "org.matrix.msc1767.text": o.title })),
+      answers: options.map((o) => ({ id: o.id, "org.matrix.msc1767.text": o.label })),
     };
     const content = { "org.matrix.msc3381.poll.start": start, "org.matrix.msc1767.text": fallback, body: fallback };
     const r = await this.client.sendEvent(roomId, "org.matrix.msc3381.poll.start" as any, content as any);

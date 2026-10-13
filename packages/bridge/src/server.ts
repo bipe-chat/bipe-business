@@ -5,13 +5,11 @@ import { createApp } from "./http.js";
 import { BipeSide } from "./matrix.js";
 import { Bridge } from "./service.js";
 import { Store } from "./store.js";
-import { WhatsApp } from "./whatsapp.js";
 
 const cfg = loadConfig();
 const store = new Store(cfg.dbPath);
 const bipe = new BipeSide(cfg.matrix, store);
-const wa = cfg.whatsapp ? new WhatsApp(cfg.whatsapp) : null;
-const bridge = new Bridge(cfg, store, bipe, wa);
+const bridge = new Bridge(cfg, store, bipe);
 
 if (!cfg.matrix.recoveryKey) console.warn("bridge: BIPE_RECOVERY_KEY is empty. Run `node dist/src/cli.js setup` once, then set it.");
 await bipe.start();

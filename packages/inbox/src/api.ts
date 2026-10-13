@@ -1,17 +1,16 @@
 // The bridge's inbox API (packages/bridge/src/http.ts). Same origin, relative paths.
 
-import type { Channel, Interactive, Status } from "./lib.ts";
+import type { Question, Status } from "./lib.ts";
 
 export type Role = "agent" | "manager";
 export type AgentInfo = { id: string; name: string; email: string; role: Role };
 export type MatrixCreds = { homeserverUrl: string; userId: string; deviceId: string; accessToken: string };
-export type Session = { token: string; agent: AgentInfo; matrix: MatrixCreds; company: { handle: string; whatsapp: boolean } };
+export type Session = { token: string; agent: AgentInfo; matrix: MatrixCreds; company: { handle: string } };
 
 export type Conversation = {
   id: string;
-  channel: Channel;
   customer_id: string;
-  external_id: string;
+  room_id: string;
   contact: string;
   contact_name: string | null;
   status: Status;
@@ -21,18 +20,16 @@ export type Conversation = {
   last_inbound_at: number | null;
   last_outbound_at: number | null;
   first_response_at: number | null;
-  moved_to: string | null;
 };
 export type Note = { id: number; body: string; at: number; agent_id: string; agent_name: string };
-export type WaMessage = { id: string; direction: "in" | "out"; type: string; body: string | null; agent_id: string | null; status: string | null; at: number };
-export type Detail = { conversation: Conversation; notes: Note[]; whatsappMessages: WaMessage[]; sameCustomer: Conversation[] };
+export type Detail = { conversation: Conversation; notes: Note[]; sameCustomer: Conversation[] };
 export type TeamMember = { id: string; email: string; name: string; role: Role; active: number; created_at: number };
 export type Device = { device_id: string; agent_id: string; created_at: number; name: string };
 export type SavedReply = { id: number; shortcut: string; body: string };
 export type Stats = {
-  newByChannel: Partial<Record<Channel, number>>;
+  days: number;
+  newConversations: number;
   byStatus: Partial<Record<Status, number>>;
-  linkCodes: { made: number; used: number };
   medianFirstResponseMs: number | null;
   perAgent: { id: string; name: string; open: number }[];
 };
@@ -59,7 +56,7 @@ export function saveSession(s: Session | null) {
   }
 }
 
-/** An API answer that is not 2xx. `code` is the bridge's `error` string, or a Cloud API error code. */
+/** An API answer that is not 2xx. `code` is the bridge's `error` string, or `error.code` when the error is an object. */
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -96,7 +93,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   const json: any = await res.json().catch(() => null);
   if (!res.ok) {
     if (res.status === 401 && path !== "/inbox/login") onUnauthorized();
-    const code = typeof json?.error === "string" ? json.error : json?.error?.code !== undefined ? String(json.error.code) : String(res.status);
+    const code = typeof json?.error === "string" ? json.error : typeof json?.error?.code === "string" ? json.error.code : String(res.status);
     throw new ApiError(res.status, code, json);
   }
   return json as T;
@@ -109,8 +106,12 @@ export function errorText(e: unknown): string {
     if (e.code === "forbidden") return "Só a gestão pode fazer isso.";
     if (e.code === "email_taken") return "Já tem uma pessoa com esse e-mail.";
     if (e.code === "not_found") return "Não achei isso. Pode ter sido apagado.";
-    if (e.code === "131047") return "O WhatsApp só aceita resposta livre até 24 horas depois da última mensagem do cliente.";
-    if (e.code === "131009") return "A pergunta tem algo que o canal não aceita. Confira as opções.";
+    if (e.code === "unauthorized") return "Sua sessão terminou. Entre de novo.";
+    if (e.code === "invalid_question") return "A pergunta tem algo que o Bipe não aceita. Confira as opções.";
+    if (e.code === "invalid_request") return "O pedido saiu incompleto. Confira os campos e tente de novo.";
+    if (e.code === "customer_must_write_first") return "O cliente precisa escrever primeiro para a empresa.";
+    if (e.code === "unknown_handle") return "Não achei esse cliente no Bipe.";
+    if (e.code === "unknown_template") return "Esse modelo de mensagem não existe.";
   }
   return "Algo deu errado. Tente de novo.";
 }
@@ -120,22 +121,19 @@ export const api = {
   logout: () => call<{ ok: true }>("POST", "/inbox/logout", {}),
   deviceReady: () => call<{ backup: { key: string; version: string } | null }>("POST", "/inbox/device/ready", {}),
 
-  conversations: (q: { assignee?: "me" | "none"; status?: Status; channel?: Channel }) => {
+  conversations: (q: { assignee?: "me" | "none"; status?: Status }) => {
     const p = new URLSearchParams();
     if (q.assignee) p.set("assignee", q.assignee);
     if (q.status) p.set("status", q.status);
-    if (q.channel) p.set("channel", q.channel);
     return call<{ conversations: Conversation[] }>("GET", `/inbox/conversations?${p}`);
   },
   conversation: (id: string) => call<Detail>("GET", `/inbox/conversations/${encodeURIComponent(id)}`),
-  patch: (id: string, p: { status?: Exclude<Status, "moved">; assigneeId?: string | null; tags?: string[] }) =>
+  patch: (id: string, p: { status?: Status; assigneeId?: string | null; tags?: string[] }) =>
     call<{ conversation: Conversation }>("PATCH", `/inbox/conversations/${encodeURIComponent(id)}`, p),
   take: (id: string) => call<{ conversation: Conversation }>("POST", `/inbox/conversations/${encodeURIComponent(id)}/take`, {}),
   addNote: (id: string, body: string) => call<{ notes: Note[] }>("POST", `/inbox/conversations/${encodeURIComponent(id)}/notes`, { body }),
-  sendText: (id: string, text: string) => call<unknown>("POST", `/inbox/conversations/${encodeURIComponent(id)}/messages`, { text }),
-  sendQuestion: (id: string, interactive: Interactive) => call<unknown>("POST", `/inbox/conversations/${encodeURIComponent(id)}/messages`, { interactive }),
+  sendQuestion: (id: string, question: Question) => call<unknown>("POST", `/inbox/conversations/${encodeURIComponent(id)}/messages`, { question }),
   markSent: (id: string) => call<{ ok: true }>("POST", `/inbox/conversations/${encodeURIComponent(id)}/sent`, {}),
-  linkCode: (id: string) => call<{ code: string; url: string; text: string }>("POST", `/inbox/conversations/${encodeURIComponent(id)}/link-code`, {}),
 
   savedReplies: () => call<{ savedReplies: SavedReply[] }>("GET", "/inbox/saved-replies"),
   putSavedReply: (shortcut: string, body: string) => call<{ savedReplies: SavedReply[] }>("PUT", "/inbox/saved-replies", { shortcut, body }),

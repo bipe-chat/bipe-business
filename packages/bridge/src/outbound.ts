@@ -1,7 +1,8 @@
-import { hubSignature } from "./secrets.js";
+import { webhookSignature } from "./secrets.js";
+import type { WebhookEvent } from "./api.js";
 
-// Forwards inbound messages to the company's own system, signed like Meta's webhooks
-// (`X-Hub-Signature-256`), so a receiver built for WhatsApp works unchanged.
+// Sends inbound events to the company's own system, signed with `Bipe-Signature` (ADR 0082).
+// The receiver checks the signature and rejects a timestamp older than a few minutes.
 
 export class OutboundWebhook {
   constructor(
@@ -11,13 +12,13 @@ export class OutboundWebhook {
     private readonly delays = [1_000, 5_000, 30_000],
   ) {}
 
-  async post(payload: unknown): Promise<boolean> {
-    const body = JSON.stringify(payload);
+  async post(event: WebhookEvent): Promise<boolean> {
+    const body = JSON.stringify(event);
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await this.fetchImpl(this.url, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-hub-signature-256": hubSignature(this.secret, body) },
+          headers: { "content-type": "application/json", "bipe-signature": webhookSignature(this.secret, body, Math.floor(Date.now() / 1000)) },
           body,
         });
         if (res.ok) return true;

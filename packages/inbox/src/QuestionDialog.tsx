@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { errorText } from "./api.ts";
-import { buildInteractive, QUESTION, questionProblems, titleLimit, type Interactive } from "./lib.ts";
+import { buildQuestion, QUESTION, questionProblems, type Question } from "./lib.ts";
 
-/** "Pergunta com opções": a structured question, as reply buttons (2 to 3) or a list (4 to 10). */
-export function QuestionDialog({ onClose, onSend }: { onClose: () => void; onSend: (i: Interactive) => Promise<void> }) {
+/** "Pergunta com opções": a structured question. The customer taps one option in Bipe. */
+export function QuestionDialog({ onClose, onSend }: { onClose: () => void; onSend: (q: Question) => Promise<void> }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [text, setText] = useState("");
   const [options, setOptions] = useState<string[]>(["", ""]);
@@ -16,9 +16,8 @@ export function QuestionDialog({ onClose, onSend }: { onClose: () => void; onSen
     if (d && !d.open) d.showModal();
   }, []);
 
-  const limit = titleLimit(options.length);
+  const limit = QUESTION.label;
   const problems = questionProblems(text, options);
-  const asList = options.length > QUESTION.maxButtons;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -27,7 +26,7 @@ export function QuestionDialog({ onClose, onSend }: { onClose: () => void; onSen
     setBusy(true);
     setError(null);
     try {
-      await onSend(buildInteractive(text, options));
+      await onSend(buildQuestion(text, options));
       onClose();
     } catch (err) {
       setError(errorText(err));
@@ -39,10 +38,10 @@ export function QuestionDialog({ onClose, onSend }: { onClose: () => void; onSen
     <dialog ref={ref} className="dialog" aria-labelledby="q-title" onClose={onClose}>
       <form onSubmit={submit}>
         <h2 id="q-title">Pergunta com opções</h2>
-        <p className="muted small">O cliente responde com um toque. Com até 3 opções, aparecem botões. Com 4 a 10, aparece uma lista.</p>
+        <p className="muted small">O cliente responde com um toque. Coloque de 2 a 10 opções.</p>
         <label>
           Pergunta
-          <textarea rows={2} value={text} onChange={(e) => setText(e.target.value)} maxLength={QUESTION.listBody} required />
+          <textarea rows={2} value={text} onChange={(e) => setText(e.target.value)} maxLength={QUESTION.text} required />
         </label>
         <fieldset>
           <legend>
@@ -76,7 +75,6 @@ export function QuestionDialog({ onClose, onSend }: { onClose: () => void; onSen
             </button>
           )}
         </fieldset>
-        <p className="muted small">{asList ? `Vai como lista, com o botão "${QUESTION.listButton}".` : "Vai como botões."}</p>
         {tried && problems.length > 0 && (
           <ul className="error" role="alert">
             {problems.map((p) => (

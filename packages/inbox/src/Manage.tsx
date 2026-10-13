@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api, errorText, type AuditRow, type Device, type Role, type SavedReply, type Session, type Stats, type TeamMember } from "./api.ts";
-import { auditLabel, CHANNEL_LABEL, formatDateTime, formatDuration, STATUS_LABEL, type Status } from "./lib.ts";
+import { auditLabel, formatDateTime, formatDuration, STATUS_LABEL, type Status } from "./lib.ts";
 
 type Tab = "team" | "devices" | "replies" | "numbers" | "audit";
 const TABS: { id: Tab; label: string }[] = [
@@ -321,7 +321,7 @@ function Numbers() {
     };
   }, [days]);
 
-  const statuses: Status[] = ["open", "waiting", "solved", "moved"];
+  const statuses: Status[] = ["open", "waiting", "solved"];
   return (
     <section>
       <div className="row-between">
@@ -340,13 +340,8 @@ function Numbers() {
       {stats && (
         <div className="stats">
           <div className="stat">
-            <h3>Conversas novas por canal</h3>
-            {(["bipe", "whatsapp"] as const).map((c) => (
-              <p key={c} className="stat-row">
-                <span>{CHANNEL_LABEL[c]}</span>
-                <strong>{stats.newByChannel[c] ?? 0}</strong>
-              </p>
-            ))}
+            <h3>Conversas novas</h3>
+            <p className="stat-big">{stats.newConversations}</p>
           </div>
           <div className="stat">
             <h3>Conversas por status</h3>
@@ -356,17 +351,6 @@ function Numbers() {
                 <strong>{stats.byStatus[s] ?? 0}</strong>
               </p>
             ))}
-          </div>
-          <div className="stat">
-            <h3>Convites para o Bipe</h3>
-            <p className="stat-row">
-              <span>Códigos criados</span>
-              <strong>{stats.linkCodes.made}</strong>
-            </p>
-            <p className="stat-row">
-              <span>Códigos usados</span>
-              <strong>{stats.linkCodes.used}</strong>
-            </p>
           </div>
           <div className="stat">
             <h3>Tempo mediano da primeira resposta</h3>

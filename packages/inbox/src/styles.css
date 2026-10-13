@@ -13,8 +13,6 @@
   --line: #dcdde3;
   --bubble-in: #eef0f3;
   --bubble-out: var(--acai-tint);
-  --wa-bg: #e3f4ea;
-  --wa-text: #145c37;
   --danger: #b3261e;
   --warn-bg: #fff4d6;
   --warn-text: #6b4a00;
@@ -39,8 +37,6 @@
     --muted: #a3a8b5;
     --line: #2e323c;
     --bubble-in: #232731;
-    --wa-bg: #12301f;
-    --wa-text: #8fd9ad;
     --danger: #ffb4ab;
     --warn-bg: #3a2e0a;
     --warn-text: #f5d98b;
@@ -101,11 +97,6 @@ ul.error { margin: 0; padding-left: 18px; }
 
 .wordmark { font-weight: 900; color: var(--acai); letter-spacing: -.02em; font-size: 22px; }
 .wordmark.big { font-size: 34px; }
-
-.pill { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; line-height: 18px; white-space: nowrap; }
-.pill-bipe { background: var(--acai-tint); color: var(--acai); }
-.pill-whatsapp { background: var(--wa-bg); color: var(--wa-text); }
-.moved { font-size: 13px; color: var(--acai); font-weight: 600; }
 
 .status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
 .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -180,7 +171,6 @@ ul.error { margin: 0; padding-left: 18px; }
 .composer-box { position: relative; }
 .composer-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .spacer { flex: 1; }
-.moved-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .replies { position: absolute; left: 0; right: 0; bottom: calc(100% + 4px); list-style: none; margin: 0; padding: 4px; background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgb(0 0 0 / .12); max-height: 260px; overflow: auto; z-index: 2; }
 .replies li { padding: 8px 10px; border-radius: 8px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .replies li[aria-selected="true"] { background: var(--acai-tint); }
@@ -188,7 +178,7 @@ ul.error { margin: 0; padding-left: 18px; }
 .card-inner { padding: 16px; display: grid; gap: 20px; align-content: start; }
 .card-inner section { display: grid; gap: 8px; }
 .contact { line-height: 1.5; }
-.channels, .notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.others, .notes { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .notes li { background: var(--warn-bg); color: var(--warn-text); border-radius: 10px; padding: 8px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .notes li .muted { color: inherit; opacity: .8; }
 .note-form { display: grid; gap: 8px; justify-items: start; }

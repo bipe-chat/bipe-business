@@ -34,7 +34,7 @@ export function Login({ onSignedIn, notice }: { onSignedIn: (s: Session) => void
       <form className="login-card" onSubmit={submit} aria-describedby={error ? "login-error" : undefined}>
         <p className="wordmark big">Bipe</p>
         <h1>Atendimento</h1>
-        <p className="muted">Conversas do Bipe e do WhatsApp num lugar só.</p>
+        <p className="muted">As conversas da empresa no Bipe, para toda a equipe.</p>
         {notice && <p className="notice">{notice}</p>}
         <label>
           E-mail

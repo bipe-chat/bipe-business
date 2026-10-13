@@ -3,7 +3,7 @@ import { api, errorText, type Conversation, type Detail, type Session, type Team
 import { Chat } from "./Chat.tsx";
 import { CustomerCard } from "./CustomerCard.tsx";
 import { displayName, formatDateTime, formatWhen } from "./lib.ts";
-import { ChannelPill, usePoll } from "./ui.tsx";
+import { usePoll } from "./ui.tsx";
 
 type Who = "me" | "none" | "all";
 type Tab = "open" | "waiting" | "solved";
@@ -49,19 +49,13 @@ export function Inbox({ session }: { session: Session }) {
     async () => {
       try {
         const assignee = who === "all" ? undefined : who;
-        // Moved chats are done here: they show with the solved ones, marked "Continuou no Bipe".
-        const parts = await Promise.all(
-          (tab === "solved" ? (["solved", "moved"] as const) : [tab]).map((status) => api.conversations({ assignee, status })),
-        );
-        const all = parts.flatMap((p) => p.conversations);
-        all.sort((a, b) => (b.last_inbound_at ?? b.created_at) - (a.last_inbound_at ?? a.created_at));
-        setList(all);
+        setList((await api.conversations({ assignee, status: tab })).conversations);
         setListError(null);
       } catch (e) {
         setListError(errorText(e));
       }
     },
-    5000,
+    15_000,
     [who, tab],
   );
 
@@ -93,14 +87,13 @@ export function Inbox({ session }: { session: Session }) {
     if (selected) void loadDetail(selected);
   }, [selected, loadDetail]);
 
-  // WhatsApp messages live on the bridge: refresh them every 5 s. Bipe messages come by sync.
-  const channel = detail?.conversation.channel;
+  // Messages come by Bipe sync. This refresh keeps status, notes and assignee current.
   usePoll(
     () => {
-      if (selected && channel) void loadDetail(selected);
+      if (selected) void loadDetail(selected);
     },
-    channel === "whatsapp" ? 5000 : 30_000,
-    [selected, channel],
+    30_000,
+    [selected],
   );
 
   const onConversation = (c: Conversation) => {
@@ -169,8 +162,7 @@ export function Inbox({ session }: { session: Session }) {
                     </time>
                   </span>
                   <span className="conv-meta">
-                    <ChannelPill channel={c.channel} />
-                    {c.status === "moved" ? <span className="moved">Continuou no Bipe</span> : <span className="muted">{assignee ?? "Sem responsável"}</span>}
+                    <span className="muted">{assignee ?? "Sem responsável"}</span>
                   </span>
                 </button>
               </li>
@@ -203,8 +195,6 @@ export function Inbox({ session }: { session: Session }) {
             detail={detail}
             agents={agents}
             onConversation={onConversation}
-            reload={() => loadDetail(detail.conversation.id)}
-            open={pick}
           />
         )}
       </section>

@@ -1,5 +1,5 @@
 // Bipe in the browser: this agent's own device of the company account (ADR 0076).
-// The SDK loads on demand, so the sign-in screen and WhatsApp work even when Bipe is slow or down.
+// The SDK loads on demand, so the sign-in screen works even when Bipe is slow or down.
 
 import type { MatrixClient, MatrixEvent, Room } from "matrix-js-sdk";
 import { api, ApiError, type MatrixCreds } from "./api.ts";
@@ -18,8 +18,6 @@ export type ChatItem = {
   body: string;
   options?: string[];
   pending?: boolean;
-  /** WhatsApp delivery status, in pt-BR. */
-  status?: string;
 };
 
 const quiet: any = { trace() {}, debug() {}, info() {}, warn() {}, error() {}, getChild: () => quiet };
@@ -223,15 +221,15 @@ class BipeConnection {
     if (type === "m.room.message" && typeof content.body === "string") return { ...base, kind: "text", body: content.body };
     if (POLL_START_TYPES.includes(type)) {
       const p = readPoll(content);
-      if (p) return { ...base, kind: "question", body: p.question, options: p.answers.map((a) => a.title) };
+      if (p) return { ...base, kind: "question", body: p.question, options: p.answers.map((a) => a.label) };
     }
     if (POLL_RESPONSE_TYPES.includes(type)) {
       const r = readPollResponse(content);
       if (!r) return null;
       const start = room.findEventById(r.pollId);
       const poll = start ? readPoll(start.getContent()) : null;
-      const titles = r.answers.map((id) => poll?.answers.find((a) => a.id === id)?.title ?? id);
-      return { ...base, kind: "answer", body: `Cliente escolheu: ${titles.join(", ")}` };
+      const labels = r.answers.map((id) => poll?.answers.find((a) => a.id === id)?.label ?? id);
+      return { ...base, kind: "answer", body: `Cliente escolheu: ${labels.join(", ")}` };
     }
     return null;
   }

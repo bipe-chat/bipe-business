@@ -12,7 +12,7 @@ const USAGE = `commands:
   agent add <email> <name> <agent|manager>  reads the password from BRIDGE_NEW_PASSWORD
   agent list
   saved-replies import <file.csv>         columns: shortcut,text (header row)
-  templates import <file.json>            WhatsApp message_templates JSON; marketing is refused (ADR 0037)
+  templates import <file.json>            list of {name, language, category, body}; marketing is refused (ADR 0037)
   templates list`;
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
