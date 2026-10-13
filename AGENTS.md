@@ -1,6 +1,6 @@
 # bipe-business: agent notes
 
-The business bridge and inbox (ADRs 0069, 0076, 0077, 0079 in `../bipe/docs/adr/`). It runs at the company, not at Bipe.
+The business bridge and inbox (ADRs 0069, 0078, 0079, 0081 in `../bipe/docs/adr/`). It runs at the company, not at Bipe.
 
 - Stack: Node 24 (22.13+ works), TypeScript, Hono, Zod, matrix-js-sdk with Rust crypto, `node:sqlite`. pnpm only. Exact versions in package.json.
 - Green gate: `pnpm build && pnpm test`. The bridge's end-to-end test runs only with `BIPE_TEST_HS` set (README).

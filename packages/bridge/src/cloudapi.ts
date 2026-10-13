@@ -17,7 +17,7 @@ const Template = z.object({
 const ReplyButton = z.object({ type: z.literal("reply"), reply: z.object({ id: z.string().min(1).max(256), title: z.string().min(1).max(20) }) });
 const ListRow = z.object({ id: z.string().min(1).max(200), title: z.string().min(1).max(24), description: z.string().max(72).optional() });
 
-/** Structured questions (ADR 0079): reply buttons (up to 3) or a list (up to 10 rows). */
+/** Structured questions (ADR 0081): reply buttons (up to 3) or a list (up to 10 rows). */
 export const Interactive = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("button"),

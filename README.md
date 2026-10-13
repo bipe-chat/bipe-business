@@ -1,6 +1,6 @@
 # bipe-business
 
-One inbox for Bipe and WhatsApp, run by the company. Decisions: ADRs 0069, 0076, 0077 and 0079 in `bipe-chat/bipe` (`docs/adr/`). Plan: `bipe/docs/business-track.md`.
+One inbox for Bipe and WhatsApp, run by the company. Decisions: ADRs 0069, 0078, 0079 and 0081 in `bipe-chat/bipe` (`docs/adr/`). Plan: `bipe/docs/business-track.md`.
 
 Status (13 October 2026): pilot slice. Not deployed anywhere.
 
@@ -11,7 +11,7 @@ Status (13 October 2026): pilot slice. Not deployed anywhere.
 | `packages/bridge` | Runs on the company's server. Holds the company's Bipe account, signs agent devices, receives WhatsApp webhooks, accepts the Cloud API request shape, serves the inbox and its API. |
 | `packages/inbox` | Web app for agents and managers. Each signed-in browser is a Matrix device of the company account, so Bipe chats are decrypted in the browser, never on Bipe's servers. |
 
-## How the keys work (ADR 0076)
+## How the keys work (ADR 0078)
 
 1. The company has one Bipe account. `cli setup` creates its cross-signing keys, secret storage and key backup, and shows the recovery key once.
 2. The bridge starts a fresh device of that account at each start. It unlocks cross-signing and the backup key with the recovery key.
@@ -32,7 +32,7 @@ Authorization: Bearer <one of BRIDGE_API_TOKENS>
 - `<phone-number-id>` = your WhatsApp number ID: passed to Meta as is.
 - `<phone-number-id>` = `bipe` (`BIPE_PHONE_NUMBER_ID`): sent on Bipe. `to` is the customer's Matrix ID, the room ID or the inbox conversation ID. The customer must have written first (error `131047` otherwise).
 - Types: `text`, `template` (from the bridge's template registry: utility and authentication only), `interactive` (`button` with up to 3 reply buttons, or `list` with up to 10 rows).
-- On Bipe an `interactive` message becomes a single-choice poll (ADR 0079). The customer's tap comes back to `BRIDGE_WEBHOOK_URL` as a Cloud API `button_reply` or `list_reply` message, with `context.id` set to the question's message ID.
+- On Bipe an `interactive` message becomes a single-choice poll (ADR 0081). The customer's tap comes back to `BRIDGE_WEBHOOK_URL` as a Cloud API `button_reply` or `list_reply` message, with `context.id` set to the question's message ID.
 
 Inbound messages from both channels go to `BRIDGE_WEBHOOK_URL` in the Cloud API webhook shape, signed with `X-Hub-Signature-256` (HMAC-SHA256 of the body with `BRIDGE_WEBHOOK_SECRET`). On Bipe, `messaging_product` is `bipe` and `wa_id` is the customer's Matrix ID.
 
@@ -73,7 +73,7 @@ BIPE_TEST_HS=http://127.0.0.1:8008 pnpm --filter ./packages/bridge test
 ## Not built yet
 
 - Billing (waits for the pilot, ADR 0075).
-- Pix charge cards (ADR 0078).
+- Pix charge cards (ADR 0080).
 - A Bipe-styled question card in the apps. Questions show with Element X's poll view for now.
 - Delivered and read statuses for Bipe messages in the company webhook.
 - Rotation of room keys after an agent is removed is left to the Matrix clients (unverified, 13 October 2026, whether every client rotates on device removal).

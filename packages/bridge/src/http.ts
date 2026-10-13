@@ -270,7 +270,7 @@ export function createApp(bridge: Bridge) {
       return sendErr(c, e);
     }
   });
-  /** Removes an agent: deactivates the account and deletes every device it has (ADR 0076). */
+  /** Removes an agent: deactivates the account and deletes every device it has (ADR 0078). */
   app.delete("/inbox/agents/:id", manager, async (c) => {
     const id = c.req.param("id")!;
     if (!store.agent(id)) return c.json({ error: "not_found" }, 404);

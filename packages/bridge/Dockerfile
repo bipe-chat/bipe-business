@@ -1,4 +1,4 @@
-# The bridge runs at the company (ADR 0035, ADR 0077). Build from the repo root:
+# The bridge runs at the company (ADR 0035, ADR 0079). Build from the repo root:
 #   docker build -f packages/bridge/Dockerfile -t bipe-business-bridge .
 FROM node:24-slim AS build
 WORKDIR /app

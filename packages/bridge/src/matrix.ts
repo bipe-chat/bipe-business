@@ -3,7 +3,7 @@ import { decodeRecoveryKey } from "matrix-js-sdk/lib/crypto-api/index.js";
 import type { Config } from "./config.js";
 import type { Option } from "./cloudapi.js";
 
-// The Bipe side of the bridge (ADR 0035, ADR 0076).
+// The Bipe side of the bridge (ADR 0035, ADR 0078).
 // One company account. The bridge is one device of it. Each inbox agent is another device.
 // The bridge holds the cross-signing keys (unlocked from secret storage with the recovery key),
 // signs agent devices, and hands the key-backup key to them so they can read past chats.
@@ -175,7 +175,7 @@ export class BipeSide {
     return true;
   }
 
-  /** The key-backup key and version, for an agent device (ADR 0076). */
+  /** The key-backup key and version, for an agent device (ADR 0078). */
   async backupKey(): Promise<{ key: string; version: string } | null> {
     const crypto = this.client.getCrypto()!;
     const key = await crypto.getSessionBackupPrivateKey();
@@ -193,7 +193,7 @@ export class BipeSide {
     return r.event_id;
   }
 
-  /** A structured question as a single-choice poll (ADR 0079), with a numbered text fallback. */
+  /** A structured question as a single-choice poll (ADR 0081), with a numbered text fallback. */
   async sendQuestion(roomId: string, question: string, options: Option[]): Promise<string> {
     const fallback = [question, ...options.map((o, i) => `${i + 1}. ${o.title}`)].join("\n");
     const start = {
