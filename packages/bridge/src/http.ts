@@ -3,7 +3,7 @@ import { z } from "zod";
 import { apiError, Interactive, SendRequest } from "./cloudapi.js";
 import { checkHubSignature, checkPassword, hashPassword, newToken, safeEqual } from "./secrets.js";
 import { Bridge, SendError } from "./service.js";
-import type { Agent } from "./store.js";
+import type { Agent, Status } from "./store.js";
 
 type Env = { Variables: { agent: Agent; deviceId: string; token: string } };
 
@@ -33,6 +33,7 @@ const Note = z.object({ body: z.string().min(1).max(4000) });
 const AgentMessage = z.union([
   z.object({ text: z.string().min(1).max(4096) }),
   z.object({ interactive: z.any() }),
+  z.object({ template: z.object({ name: z.string().min(1).max(512), language: z.string().min(2).max(15), params: z.array(z.string().max(1024)).max(20).default([]) }) }),
 ]);
 const SavedReply = z.object({ shortcut: z.string().min(1).max(40).regex(/^[a-z0-9_-]+$/), body: z.string().min(1).max(4096) });
 const NewAgent = z.object({ email: z.string().email().max(254), name: z.string().min(1).max(80), role: z.enum(["agent", "manager"]), password: z.string().min(12).max(512) });
@@ -48,6 +49,8 @@ export function createApp(bridge: Bridge) {
   const { cfg, store } = bridge;
   const app = new Hono<Env>();
   const loginLimit = new Limiter(10, 15 * 60_000);
+  // A read is logged once per agent and conversation per 10 minutes, not on every refresh.
+  const lastRead = new Map<string, number>();
 
   app.get("/health", (c) => c.json({ ok: true }));
 
@@ -136,6 +139,7 @@ export function createApp(bridge: Bridge) {
 
   /** The browser uploaded its device keys: the bridge signs the device and hands over the backup key. */
   app.post("/inbox/device/ready", async (c) => {
+    if (!bridge.bipe) return c.json({ error: "bipe_unavailable" }, 503);
     const signed = await bridge.bipe!.signDevice(c.get("deviceId"));
     if (!signed) return c.json({ error: "device_keys_missing" }, 409);
     store.audit("device.signed", { agentId: c.get("agent").id, detail: c.get("deviceId") });
@@ -159,16 +163,20 @@ export function createApp(bridge: Bridge) {
   // ------------------------------------------------------------ inbox: conversations
   app.get("/inbox/conversations", (c) => {
     const q = c.req.query();
-    const status = (["open", "waiting", "solved", "moved"] as const).find((s) => s === q.status);
+    const statuses = (q.status ?? "").split(",").filter((x): x is Status => ["open", "waiting", "solved", "moved"].includes(x));
     const channel = (["bipe", "whatsapp"] as const).find((s) => s === q.channel);
     const assigneeId = q.assignee === "me" ? c.get("agent").id : q.assignee === "none" ? null : q.assignee || undefined;
-    return c.json({ conversations: store.listConversations({ status, channel, assigneeId }) });
+    return c.json({ conversations: store.listConversations({ statuses, channel, assigneeId }) });
   });
 
   app.get("/inbox/conversations/:id", (c) => {
     const conv = store.conversation(c.req.param("id"));
     if (!conv) return c.json({ error: "not_found" }, 404);
-    store.audit("conversation.read", { agentId: c.get("agent").id, conversationId: conv.id });
+    const key = `${c.get("agent").id}:${conv.id}`;
+    if ((lastRead.get(key) ?? 0) < Date.now() - 10 * 60_000) {
+      lastRead.set(key, Date.now());
+      store.audit("conversation.read", { agentId: c.get("agent").id, conversationId: conv.id });
+    }
     return c.json({
       conversation: conv,
       notes: store.notes(conv.id),
@@ -216,7 +224,7 @@ export function createApp(bridge: Bridge) {
   app.post("/inbox/conversations/:id/messages", async (c) => {
     try {
       const m = AgentMessage.parse(await c.req.json());
-      const out = await bridge.agentSend(c.req.param("id"), c.get("agent").id, "text" in m ? { text: m.text } : { interactive: Interactive.parse(m.interactive) });
+      const out = await bridge.agentSend(c.req.param("id"), c.get("agent").id, "text" in m ? { text: m.text } : "template" in m ? { template: m.template } : { interactive: Interactive.parse(m.interactive) });
       return c.json(out);
     } catch (e) {
       return sendErr(c, e);
@@ -291,7 +299,10 @@ export function createApp(bridge: Bridge) {
     store.audit("device.remove", { agentId: c.get("agent").id, detail: d });
     return c.json({ devices: store.liveDevices() });
   });
-  app.get("/inbox/stats", manager, (c) => c.json(store.stats(Number(c.req.query("days") ?? 7) * 86_400_000)));
+  app.get("/inbox/stats", manager, (c) => {
+    const days = Math.min(Math.max(Math.trunc(Number(c.req.query("days") ?? 7)) || 7, 1), 365);
+    return c.json({ days, ...store.stats(days * 86_400_000) });
+  });
   app.get("/inbox/audit", manager, (c) => c.json({ audit: store.auditLog(Number(c.req.query("limit") ?? 200)) }));
 
   return app;

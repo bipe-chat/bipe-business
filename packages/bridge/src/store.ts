@@ -196,10 +196,11 @@ export class Store {
     return toConversation(this.db.prepare("SELECT * FROM conversations WHERE channel = ? AND external_id = ?").get(channel, externalId) as Row);
   }
 
-  listConversations(f: { status?: Status; assigneeId?: string | null; channel?: Channel; customerId?: string; limit?: number }): Conversation[] {
+  listConversations(f: { status?: Status; statuses?: Status[]; assigneeId?: string | null; channel?: Channel; customerId?: string; limit?: number }): Conversation[] {
     const where: string[] = [];
     const args: (string | number | null)[] = [];
     if (f.status) (where.push("status = ?"), args.push(f.status));
+    if (f.statuses?.length) (where.push(`status IN (${f.statuses.map(() => "?").join(",")})`), args.push(...f.statuses));
     if (f.channel) (where.push("channel = ?"), args.push(f.channel));
     if (f.customerId) (where.push("customer_id = ?"), args.push(f.customerId));
     if (f.assigneeId === null) where.push("assignee_id IS NULL");
@@ -374,6 +375,7 @@ export class Store {
   }
 
   // --- numbers for managers. Counted from bridge records, never from content.
+  // newByChannel, linkCodes and medianFirstResponseMs cover the window; byStatus and perAgent are the state now.
   stats(sinceMs: number) {
     const since = this.now() - sinceMs;
     const byChannel = this.db

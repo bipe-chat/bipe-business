@@ -151,3 +151,26 @@ test("inbox: saved replies are managed by managers", async () => {
   assert.equal(r.savedReplies[0].shortcut, "oi");
   assert.equal((await (await req("/inbox/saved-replies", { token: at })).json()).savedReplies.length, 1);
 });
+
+test("inbox: templates from the inbox, status lists, link codes only for WhatsApp, stats window", async () => {
+  const { req, store, at, mt, calls } = setup();
+  store.putTemplate({ name: "pedido_saiu", language: "pt_BR", category: "utility", body: "Seu pedido {{1}} saiu." });
+  const wa = store.upsertConversation("whatsapp", "5531777", "5531777", "Rui").conv;
+  const r = await req(`/inbox/conversations/${wa.id}/messages`, { method: "POST", json: { template: { name: "pedido_saiu", language: "pt_BR", params: ["123"] } }, token: at });
+  assert.equal(r.status, 200);
+  const sent = JSON.parse(String(calls.find((c) => c.url.startsWith("http://graph.test"))!.init.body));
+  assert.equal(sent.type, "template");
+  assert.deepEqual(sent.template.components[0].parameters, [{ type: "text", text: "123" }]);
+  const bp = store.upsertConversation("bipe", "!r:x", "@rui:x", "Rui").conv;
+  store.updateConversation(bp.id, { status: "solved" });
+  store.updateConversation(wa.id, { status: "moved" });
+  const closed = await (await req("/inbox/conversations?status=solved,moved", { token: at })).json();
+  assert.equal(closed.conversations.length, 2);
+  assert.equal((await req(`/inbox/conversations/${bp.id}/link-code`, { method: "POST", token: at })).status, 400);
+  assert.equal((await req("/inbox/device/ready", { method: "POST", token: at })).status, 503);
+  const st = await (await req("/inbox/stats?days=abc", { token: mt })).json();
+  assert.equal(st.days, 7);
+  // Reads are logged once per agent and conversation, not on every refresh.
+  for (let i = 0; i < 3; i++) await req(`/inbox/conversations/${wa.id}`, { token: at });
+  assert.equal(store.auditLog().filter((a: any) => a.action === "conversation.read").length, 1);
+});

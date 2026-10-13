@@ -42,8 +42,10 @@ export class Bridge {
       if (created) this.store.audit("conversation.open", { conversationId: conv.id, detail: "bipe" });
       return;
     }
-    const conv = this.store.conversationByExternal("bipe", e.roomId);
-    if (!conv) return;
+    const known = this.store.conversationByExternal("bipe", e.roomId);
+    if (!known) return;
+    // The customer's display name can change after the first invite: keep the newest one.
+    const conv = e.kind === "text" && e.fromCompany ? known : this.store.upsertConversation("bipe", e.roomId, known.contact, e.senderName).conv;
     if (e.kind === "text") {
       if (e.fromCompany) {
         // An agent answered from the inbox, on the agent's own device.
@@ -97,6 +99,7 @@ export class Bridge {
   makeLinkCode(conversationId: string, agentId: string) {
     const conv = this.store.conversation(conversationId);
     if (!conv) throw new SendError(404, 100, "conversation not found");
+    if (conv.channel !== "whatsapp") throw new SendError(400, 100, "link codes move WhatsApp chats to Bipe");
     const code = newLinkCode();
     this.store.addLinkCode(code, conv.id, agentId);
     this.store.audit("linkcode.create", { agentId, conversationId: conv.id });
@@ -178,13 +181,19 @@ export class Bridge {
   }
 
   /** An agent replies from the inbox to a WhatsApp chat (Bipe chats are sent by the agent's own device). */
-  async agentSend(conversationId: string, agentId: string, req: { text?: string; interactive?: InteractiveMsg }) {
+  async agentSend(conversationId: string, agentId: string, req: { text?: string; interactive?: InteractiveMsg; template?: { name: string; language: string; params: string[] } }) {
     const conv = this.store.conversation(conversationId);
     if (!conv) throw new SendError(404, 100, "conversation not found");
     const base = { messaging_product: conv.channel, to: conv.channel === "whatsapp" ? conv.contact : conv.external_id } as const;
-    const msg: SendRequest = req.interactive
-      ? ({ ...base, type: "interactive", interactive: req.interactive } as SendRequest)
-      : ({ ...base, type: "text", text: { body: req.text ?? "" } } as SendRequest);
+    const msg: SendRequest = req.template
+      ? ({
+          ...base,
+          type: "template",
+          template: { name: req.template.name, language: { code: req.template.language }, components: [{ type: "body", parameters: req.template.params.map((text) => ({ type: "text", text })) }] },
+        } as SendRequest)
+      : req.interactive
+        ? ({ ...base, type: "interactive", interactive: req.interactive } as SendRequest)
+        : ({ ...base, type: "text", text: { body: req.text ?? "" } } as SendRequest);
     if (conv.channel === "whatsapp") {
       if (!this.wa) throw new SendError(400, 100, "whatsapp is not set up");
       return this.sendWhatsApp(msg, agentId);
