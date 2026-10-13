@@ -26,7 +26,7 @@ export class Bridge {
     readonly store: Store,
     readonly bipe: BipeSide | null,
     readonly wa: WhatsApp | null,
-    fetchImpl: typeof fetch = fetch,
+    private readonly fetchImpl: typeof fetch = fetch,
   ) {
     this.outbound = cfg.outboundWebhook ? new OutboundWebhook(cfg.outboundWebhook.url, cfg.outboundWebhook.secret, fetchImpl) : null;
     bipe?.onEvent((e) => this.onBipe(e));
@@ -144,7 +144,7 @@ export class Bridge {
   }
 
   private async sendBipe(req: SendRequest, agentId: string | null) {
-    const conv = this.bipeConversationFor(req.to);
+    const conv = this.bipeConversationFor(await this.resolveHandle(req.to));
     // No cold messages: a company writes only to a customer who wrote first (ADR 0016, ADR 0037).
     if (!conv) throw new SendError(400, 131047, "no conversation with this customer: the customer must write first");
     let body: string;
@@ -172,7 +172,19 @@ export class Bridge {
     return this.bipe!.sendQuestion(conv.external_id, questionText(i), questionOptions(i));
   }
 
-  /** `to` on the Bipe channel: a Matrix ID, a room ID, or a conversation ID. */
+  /** `@handle` (no server part) becomes the Matrix ID through the Bipe API, with the company account's token. */
+  async resolveHandle(to: string): Promise<string> {
+    if (!/^@[a-z0-9._]{2,30}$/i.test(to) || !this.bipe) return to;
+    const res = await this.fetchImpl(`${this.cfg.apiUrl}/v1/handles/${encodeURIComponent(to.slice(1).toLowerCase())}`, {
+      headers: { authorization: `Bearer ${this.bipe.accessToken}` },
+    }).catch(() => null);
+    if (!res?.ok) throw new SendError(404, 131026, `no Bipe account with the handle ${to}`);
+    const body = (await res.json().catch(() => ({}))) as { user_id?: string };
+    if (!body.user_id) throw new SendError(404, 131026, `no Bipe account with the handle ${to}`);
+    return body.user_id;
+  }
+
+  /** `to` on the Bipe channel: a @handle, a Matrix ID, a room ID, or a conversation ID. */
   bipeConversationFor(to: string): Conversation | undefined {
     if (to.startsWith("!")) return this.store.conversationByExternal("bipe", to);
     if (to.startsWith("@") && to.includes(":")) return this.store.listConversations({ channel: "bipe", limit: 500 }).find((c) => c.contact === to);

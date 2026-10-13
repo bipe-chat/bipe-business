@@ -30,7 +30,7 @@ Authorization: Bearer <one of BRIDGE_API_TOKENS>
 ```
 
 - `<phone-number-id>` = your WhatsApp number ID: passed to Meta as is.
-- `<phone-number-id>` = `bipe` (`BIPE_PHONE_NUMBER_ID`): sent on Bipe. `to` is the customer's Matrix ID, the room ID or the inbox conversation ID. The customer must have written first (error `131047` otherwise).
+- `<phone-number-id>` = `bipe` (`BIPE_PHONE_NUMBER_ID`): sent on Bipe. `to` is the customer's @handle, Matrix ID, room ID or inbox conversation ID. The customer must have written first (error `131047` otherwise).
 - Types: `text`, `template` (from the bridge's template registry: utility and authentication only), `interactive` (`button` with up to 3 reply buttons, or `list` with up to 10 rows).
 - On Bipe an `interactive` message becomes a single-choice poll (ADR 0081). The customer's tap comes back to `BRIDGE_WEBHOOK_URL` as a Cloud API `button_reply` or `list_reply` message, with `context.id` set to the question's message ID.
 

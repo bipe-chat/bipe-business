@@ -174,3 +174,26 @@ test("inbox: templates from the inbox, status lists, link codes only for WhatsAp
   for (let i = 0; i < 3; i++) await req(`/inbox/conversations/${wa.id}`, { token: at });
   assert.equal(store.auditLog().filter((a: any) => a.action === "conversation.read").length, 1);
 });
+
+test("Cloud API on Bipe: @handle resolves through the Bipe API", async () => {
+  const cfg = loadConfig({ BRIDGE_PUBLIC_URL: "https://x", BIPE_HOMESERVER_URL: "http://hs", BIPE_USER_ID: "@loja:bipe.net.br", BIPE_PASSWORD: "pw", BIPE_HANDLE: "loja", BRIDGE_API_TOKENS: "tok", BIPE_API_URL: "http://api.test" });
+  const seen: string[] = [];
+  const fakeFetch = (async (url: string, init: RequestInit) => {
+    seen.push(`${url} ${(init.headers as any)?.authorization}`);
+    if (String(url) === "http://api.test/v1/handles/caionasc") return new Response(JSON.stringify({ handle: "caionasc", user_id: "@abc123:bipe.net.br" }));
+    return new Response("{}", { status: 404 });
+  }) as unknown as typeof fetch;
+  const sent: string[] = [];
+  const bipe = { accessToken: "bridge-token", onEvent() {}, async sendText(room: string, body: string) { sent.push(`${room} ${body}`); return "$ev1"; } } as any;
+  const store = new Store(":memory:");
+  const app = createApp(new Bridge(cfg, store, bipe, null, fakeFetch));
+  store.upsertConversation("bipe", "!room:bipe.net.br", "@abc123:bipe.net.br", "Caio");
+  const body = (to: string) => JSON.stringify({ messaging_product: "bipe", to, type: "text", text: { body: "Oi Caio" } });
+  const r = await app.request("/v1/bipe/messages", { method: "POST", headers: { authorization: "Bearer tok", "content-type": "application/json" }, body: body("@CaioNasc") });
+  assert.equal(r.status, 200);
+  assert.deepEqual(sent, ["!room:bipe.net.br Oi Caio"]);
+  assert.equal(seen[0], "http://api.test/v1/handles/caionasc Bearer bridge-token");
+  const missing = await app.request("/v1/bipe/messages", { method: "POST", headers: { authorization: "Bearer tok", "content-type": "application/json" }, body: body("@ninguem") });
+  assert.equal(missing.status, 404);
+  assert.equal((await missing.json()).error.code, 131026);
+});
