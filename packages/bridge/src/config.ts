@@ -8,6 +8,8 @@ export type Config = {
   publicUrl: string;
   /** Bipe public site, for link-code pages. */
   siteUrl: string;
+  /** Bipe API, to resolve @handles on the Cloud API paths. */
+  apiUrl: string;
   matrix: {
     homeserverUrl: string;
     /** The company account: full Matrix ID. */
@@ -57,6 +59,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dbPath: env.BRIDGE_DB ?? "bridge.sqlite",
     publicUrl: req(env, "BRIDGE_PUBLIC_URL").replace(/\/$/, ""),
     siteUrl: (env.BIPE_SITE_URL ?? "https://bipe.chat").replace(/\/$/, ""),
+    apiUrl: (env.BIPE_API_URL ?? "https://api.bipe.net.br").replace(/\/$/, ""),
     matrix: {
       homeserverUrl: req(env, "BIPE_HOMESERVER_URL").replace(/\/$/, ""),
       userId: req(env, "BIPE_USER_ID"),

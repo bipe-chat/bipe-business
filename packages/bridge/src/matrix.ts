@@ -38,6 +38,11 @@ export class BipeSide {
     return this.cfg.userId;
   }
 
+  /** The bridge device's access token, for the Bipe API (handle lookups). */
+  get accessToken(): string {
+    return this.client?.getAccessToken() ?? "";
+  }
+
   private passwordAuth(session?: string) {
     return { type: "m.login.password", identifier: { type: "m.id.user", user: this.cfg.userId }, password: this.cfg.password, ...(session ? { session } : {}) };
   }
