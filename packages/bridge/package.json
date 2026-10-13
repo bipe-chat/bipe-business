@@ -1,0 +1,22 @@
+{
+  "name": "@bipe-business/bridge",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node dist/src/server.js",
+    "test": "tsc -p . && node --test --test-concurrency=1 dist/test/*.test.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "1.19.17",
+    "hono": "4.13.13",
+    "matrix-js-sdk": "43.0.0",
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3"
+  }
+}

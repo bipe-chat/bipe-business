@@ -1,0 +1,298 @@
+import { Hono, type Context } from "hono";
+import { z } from "zod";
+import { apiError, Interactive, SendRequest } from "./cloudapi.js";
+import { checkHubSignature, checkPassword, hashPassword, newToken, safeEqual } from "./secrets.js";
+import { Bridge, SendError } from "./service.js";
+import type { Agent } from "./store.js";
+
+type Env = { Variables: { agent: Agent; deviceId: string; token: string } };
+
+/** Small in-memory limiter: `max` hits per `windowMs` per key. One bridge instance only. */
+class Limiter {
+  private hits = new Map<string, number[]>();
+  constructor(
+    private readonly max: number,
+    private readonly windowMs: number,
+  ) {}
+  ok(key: string): boolean {
+    const now = Date.now();
+    const list = (this.hits.get(key) ?? []).filter((t) => now - t < this.windowMs);
+    list.push(now);
+    this.hits.set(key, list);
+    return list.length <= this.max;
+  }
+}
+
+const Login = z.object({ email: z.string().email().max(254), password: z.string().min(1).max(512) });
+const Patch = z.object({
+  status: z.enum(["open", "waiting", "solved"]).optional(),
+  assigneeId: z.string().uuid().nullable().optional(),
+  tags: z.array(z.string().min(1).max(40)).max(20).optional(),
+});
+const Note = z.object({ body: z.string().min(1).max(4000) });
+const AgentMessage = z.union([
+  z.object({ text: z.string().min(1).max(4096) }),
+  z.object({ interactive: z.any() }),
+]);
+const SavedReply = z.object({ shortcut: z.string().min(1).max(40).regex(/^[a-z0-9_-]+$/), body: z.string().min(1).max(4096) });
+const NewAgent = z.object({ email: z.string().email().max(254), name: z.string().min(1).max(80), role: z.enum(["agent", "manager"]), password: z.string().min(12).max(512) });
+
+function sendErr(c: Context, e: unknown) {
+  if (e instanceof SendError) return c.json((e as any).meta ?? apiError(e.code, e.message), e.status as any);
+  if (e instanceof z.ZodError) return c.json(apiError(100, "invalid parameter", e.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")), 400);
+  console.error("bridge: request failed:", (e as Error).message);
+  return c.json(apiError(1, "internal error"), 500);
+}
+
+export function createApp(bridge: Bridge) {
+  const { cfg, store } = bridge;
+  const app = new Hono<Env>();
+  const loginLimit = new Limiter(10, 15 * 60_000);
+
+  app.get("/health", (c) => c.json({ ok: true }));
+
+  // ------------------------------------------------------------ Meta webhook (WhatsApp channel)
+  app.get("/webhooks/whatsapp", (c) => {
+    const wa = cfg.whatsapp;
+    if (!wa) return c.text("not found", 404);
+    const mode = c.req.query("hub.mode");
+    const token = c.req.query("hub.verify_token") ?? "";
+    const challenge = c.req.query("hub.challenge") ?? "";
+    if (mode === "subscribe" && safeEqual(token, wa.verifyToken)) return c.text(challenge);
+    return c.text("forbidden", 403);
+  });
+
+  app.post("/webhooks/whatsapp", async (c) => {
+    const wa = cfg.whatsapp;
+    if (!wa) return c.text("not found", 404);
+    const raw = Buffer.from(await c.req.arrayBuffer());
+    if (!checkHubSignature(wa.appSecret, raw, c.req.header("x-hub-signature-256"))) return c.text("bad signature", 401);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw.toString("utf8"));
+    } catch {
+      return c.text("bad json", 400);
+    }
+    await bridge.onWhatsApp(payload);
+    return c.text("ok");
+  });
+
+  // ------------------------------------------------------------ Cloud API shape (company systems)
+  app.post("/:version/:phoneNumberId/messages", async (c) => {
+    const auth = c.req.header("authorization") ?? "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if (!token || !cfg.apiTokens.some((t) => safeEqual(t, token))) return c.json(apiError(190, "invalid access token"), 401);
+    try {
+      const req = SendRequest.parse(await c.req.json());
+      return c.json(await bridge.send(c.req.param("phoneNumberId"), req));
+    } catch (e) {
+      return sendErr(c, e);
+    }
+  });
+
+  // ------------------------------------------------------------ inbox: sign-in
+  app.post("/inbox/login", async (c) => {
+    const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
+    let body: z.infer<typeof Login>;
+    try {
+      body = Login.parse(await c.req.json());
+    } catch {
+      return c.json({ error: "invalid" }, 400);
+    }
+    if (!loginLimit.ok(`ip:${ip}`) || !loginLimit.ok(`email:${body.email.toLowerCase()}`)) return c.json({ error: "rate_limited" }, 429);
+    const agent = store.agentByEmail(body.email);
+    if (!agent || !agent.active || !checkPassword(body.password, agent.password_hash)) return c.json({ error: "wrong_credentials" }, 401);
+    if (!bridge.bipe) return c.json({ error: "bipe_unavailable" }, 503);
+    const m = await bridge.bipe.login(`Inbox: ${agent.name}`);
+    const token = newToken();
+    store.addDevice(m.deviceId, agent.id);
+    store.addSession(token, agent.id, m.deviceId, cfg.sessionDays);
+    store.audit("agent.login", { agentId: agent.id, detail: m.deviceId });
+    return c.json({
+      token,
+      agent: { id: agent.id, name: agent.name, email: agent.email, role: agent.role },
+      matrix: { homeserverUrl: cfg.matrix.homeserverUrl, userId: m.userId, deviceId: m.deviceId, accessToken: m.accessToken },
+      company: { handle: cfg.matrix.handle, whatsapp: Boolean(cfg.whatsapp) },
+    });
+  });
+
+  // Everything below needs a session.
+  app.use("/inbox/*", async (c, next) => {
+    const auth = c.req.header("authorization") ?? "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const s = token ? store.session(token) : undefined;
+    const agent = s ? store.agent(s.agent_id) : undefined;
+    if (!s || !agent || !agent.active) return c.json({ error: "unauthorized" }, 401);
+    c.set("agent", agent);
+    c.set("deviceId", s.device_id);
+    c.set("token", token);
+    await next();
+  });
+
+  const manager = async (c: Context<Env>, next: () => Promise<void>) => {
+    if (c.get("agent").role !== "manager") return c.json({ error: "forbidden" }, 403);
+    await next();
+  };
+
+  /** The browser uploaded its device keys: the bridge signs the device and hands over the backup key. */
+  app.post("/inbox/device/ready", async (c) => {
+    const signed = await bridge.bipe!.signDevice(c.get("deviceId"));
+    if (!signed) return c.json({ error: "device_keys_missing" }, 409);
+    store.audit("device.signed", { agentId: c.get("agent").id, detail: c.get("deviceId") });
+    return c.json({ backup: await bridge.bipe!.backupKey() });
+  });
+
+  app.post("/inbox/logout", async (c) => {
+    const deviceId = c.get("deviceId");
+    await bridge.bipe?.deleteDevice(deviceId).catch(() => {});
+    store.markDeviceRemoved(deviceId);
+    store.deleteSession(c.get("token"));
+    store.audit("agent.logout", { agentId: c.get("agent").id, detail: deviceId });
+    return c.json({ ok: true });
+  });
+
+  app.get("/inbox/me", (c) => {
+    const a = c.get("agent");
+    return c.json({ agent: { id: a.id, name: a.name, email: a.email, role: a.role }, company: { handle: cfg.matrix.handle, whatsapp: Boolean(cfg.whatsapp) } });
+  });
+
+  // ------------------------------------------------------------ inbox: conversations
+  app.get("/inbox/conversations", (c) => {
+    const q = c.req.query();
+    const status = (["open", "waiting", "solved", "moved"] as const).find((s) => s === q.status);
+    const channel = (["bipe", "whatsapp"] as const).find((s) => s === q.channel);
+    const assigneeId = q.assignee === "me" ? c.get("agent").id : q.assignee === "none" ? null : q.assignee || undefined;
+    return c.json({ conversations: store.listConversations({ status, channel, assigneeId }) });
+  });
+
+  app.get("/inbox/conversations/:id", (c) => {
+    const conv = store.conversation(c.req.param("id"));
+    if (!conv) return c.json({ error: "not_found" }, 404);
+    store.audit("conversation.read", { agentId: c.get("agent").id, conversationId: conv.id });
+    return c.json({
+      conversation: conv,
+      notes: store.notes(conv.id),
+      whatsappMessages: conv.channel === "whatsapp" ? store.waMessages(conv.id) : [],
+      sameCustomer: store.listConversations({ customerId: conv.customer_id }).filter((x) => x.id !== conv.id),
+    });
+  });
+
+  app.patch("/inbox/conversations/:id", async (c) => {
+    try {
+      const p = Patch.parse(await c.req.json());
+      if (p.assigneeId) {
+        const a = store.agent(p.assigneeId);
+        if (!a || !a.active) return c.json({ error: "unknown_agent" }, 400);
+      }
+      const conv = store.updateConversation(c.req.param("id"), { status: p.status, assignee_id: p.assigneeId, tags: p.tags });
+      if (!conv) return c.json({ error: "not_found" }, 404);
+      store.audit("conversation.update", { agentId: c.get("agent").id, conversationId: conv.id, detail: JSON.stringify(p) });
+      return c.json({ conversation: conv });
+    } catch (e) {
+      return sendErr(c, e);
+    }
+  });
+
+  app.post("/inbox/conversations/:id/take", (c) => {
+    const conv = store.updateConversation(c.req.param("id"), { assignee_id: c.get("agent").id });
+    if (!conv) return c.json({ error: "not_found" }, 404);
+    store.audit("conversation.take", { agentId: c.get("agent").id, conversationId: conv.id });
+    return c.json({ conversation: conv });
+  });
+
+  app.post("/inbox/conversations/:id/notes", async (c) => {
+    try {
+      const n = Note.parse(await c.req.json());
+      const conv = store.conversation(c.req.param("id"));
+      if (!conv) return c.json({ error: "not_found" }, 404);
+      store.addNote(conv.id, c.get("agent").id, n.body);
+      store.audit("note.add", { agentId: c.get("agent").id, conversationId: conv.id });
+      return c.json({ notes: store.notes(conv.id) });
+    } catch (e) {
+      return sendErr(c, e);
+    }
+  });
+
+  app.post("/inbox/conversations/:id/messages", async (c) => {
+    try {
+      const m = AgentMessage.parse(await c.req.json());
+      const out = await bridge.agentSend(c.req.param("id"), c.get("agent").id, "text" in m ? { text: m.text } : { interactive: Interactive.parse(m.interactive) });
+      return c.json(out);
+    } catch (e) {
+      return sendErr(c, e);
+    }
+  });
+
+  /** The agent's device sent a Bipe message: record who answered (attribution and response times). */
+  app.post("/inbox/conversations/:id/sent", (c) => {
+    const conv = store.conversation(c.req.param("id"));
+    if (!conv) return c.json({ error: "not_found" }, 404);
+    store.markOutbound(conv.id);
+    store.audit("message.send", { agentId: c.get("agent").id, conversationId: conv.id, detail: "bipe" });
+    return c.json({ ok: true });
+  });
+
+  app.post("/inbox/conversations/:id/link-code", (c) => {
+    try {
+      return c.json(bridge.makeLinkCode(c.req.param("id"), c.get("agent").id));
+    } catch (e) {
+      return sendErr(c, e);
+    }
+  });
+
+  // ------------------------------------------------------------ inbox: saved replies, templates
+  app.get("/inbox/saved-replies", (c) => c.json({ savedReplies: store.savedReplies() }));
+  app.put("/inbox/saved-replies", manager, async (c) => {
+    try {
+      const r = SavedReply.parse(await c.req.json());
+      store.putSavedReply(r.shortcut, r.body);
+      return c.json({ savedReplies: store.savedReplies() });
+    } catch (e) {
+      return sendErr(c, e);
+    }
+  });
+  app.delete("/inbox/saved-replies/:id", manager, (c) => {
+    store.deleteSavedReply(Number(c.req.param("id")));
+    return c.json({ savedReplies: store.savedReplies() });
+  });
+  app.get("/inbox/templates", (c) => c.json({ templates: store.templates() }));
+
+  // ------------------------------------------------------------ inbox: team (managers)
+  app.get("/inbox/agents", (c) => c.json({ agents: store.agents() }));
+  app.post("/inbox/agents", manager, async (c) => {
+    try {
+      const a = NewAgent.parse(await c.req.json());
+      if (store.agentByEmail(a.email)) return c.json({ error: "email_taken" }, 409);
+      const made = store.addAgent({ email: a.email, name: a.name, role: a.role, password_hash: hashPassword(a.password) });
+      store.audit("agent.add", { agentId: c.get("agent").id, detail: made.id });
+      return c.json({ agents: store.agents() });
+    } catch (e) {
+      return sendErr(c, e);
+    }
+  });
+  /** Removes an agent: deactivates the account and deletes every device it has (ADR 0076). */
+  app.delete("/inbox/agents/:id", manager, async (c) => {
+    const id = c.req.param("id")!;
+    if (!store.agent(id)) return c.json({ error: "not_found" }, 404);
+    store.setAgentActive(id, false);
+    for (const d of store.liveDevices(id)) {
+      await bridge.bipe?.deleteDevice(d.device_id).catch(() => {});
+      store.markDeviceRemoved(d.device_id);
+    }
+    store.audit("agent.remove", { agentId: c.get("agent").id, detail: id });
+    return c.json({ agents: store.agents() });
+  });
+  app.get("/inbox/devices", manager, (c) => c.json({ devices: store.liveDevices() }));
+  app.delete("/inbox/devices/:deviceId", manager, async (c) => {
+    const d = c.req.param("deviceId")!;
+    if (!store.deviceAgent(d)) return c.json({ error: "not_found" }, 404);
+    await bridge.bipe?.deleteDevice(d).catch(() => {});
+    store.markDeviceRemoved(d);
+    store.audit("device.remove", { agentId: c.get("agent").id, detail: d });
+    return c.json({ devices: store.liveDevices() });
+  });
+  app.get("/inbox/stats", manager, (c) => c.json(store.stats(Number(c.req.query("days") ?? 7) * 86_400_000)));
+  app.get("/inbox/audit", manager, (c) => c.json({ audit: store.auditLog(Number(c.req.query("limit") ?? 200)) }));
+
+  return app;
+}
