@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, loadSession, saveSession, setToken, setUnauthorizedHandler, type Session } from "./api.ts";
+import { api, clearLegacySession, setUnauthorizedHandler, type Session } from "./api.ts";
 import { Inbox } from "./Inbox.tsx";
 import { Login } from "./Login.tsx";
 import { Manage } from "./Manage.tsx";
@@ -9,17 +9,12 @@ import { BipeStatus } from "./ui.tsx";
 type View = "inbox" | "manage";
 
 export function App() {
-  const [session, setSession] = useState<Session | null>(() => {
-    const s = loadSession();
-    setToken(s?.token ?? null);
-    return s;
-  });
+  // undefined while the bridge says whether the cookie still has a session (bipe#407).
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [notice, setNotice] = useState<string | null>(null);
   const [view, setView] = useState<View>("inbox");
 
   const end = useCallback((message: string | null) => {
-    setToken(null);
-    saveSession(null);
     void bipe.clear();
     setSession(null);
     setView("inbox");
@@ -31,12 +26,15 @@ export function App() {
   }, [end]);
 
   useEffect(() => {
+    clearLegacySession();
+    api.session().then(setSession, () => setSession(null));
+  }, []);
+
+  useEffect(() => {
     if (session) void bipe.start(session.matrix);
   }, [session]);
 
   const signedIn = (s: Session) => {
-    setToken(s.token);
-    saveSession(s);
     setNotice(null);
     setSession(s);
   };
@@ -50,6 +48,7 @@ export function App() {
     end(null);
   };
 
+  if (session === undefined) return null;
   if (!session) return <Login onSignedIn={signedIn} notice={notice} />;
   const manager = session.agent.role === "manager";
 

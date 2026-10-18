@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL REFERENCES agents(id),
   device_id TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+  matrix_access_token TEXT
 );
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -122,6 +123,9 @@ export class Store {
     if (!columns.includes("revoke_requested_at")) {
       this.db.exec("ALTER TABLE agent_devices ADD COLUMN revoke_requested_at INTEGER; ALTER TABLE agent_devices ADD COLUMN revoke_attempts INTEGER NOT NULL DEFAULT 0;");
     }
+    // bipe#407: the inbox's Matrix access token stays here, not in the browser's storage.
+    const sessionColumns = (this.db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
+    if (!sessionColumns.includes("matrix_access_token")) this.db.exec("ALTER TABLE sessions ADD COLUMN matrix_access_token TEXT;");
   }
 
   tx<T>(fn: () => T): T {
@@ -322,15 +326,22 @@ export class Store {
         .all(now, now) as { device_id: string }[]
     ).map((r) => r.device_id);
   }
-  addSession(token: string, agentId: string, deviceId: string, days: number) {
-    this.db.prepare("INSERT INTO sessions (token_hash, agent_id, device_id, expires_at) VALUES (?, ?, ?, ?)").run(sha256(token), agentId, deviceId, this.now() + days * 86_400_000);
+  /** `matrixAccessToken`: the inbox device's Matrix token. The inbox reads it after each page load (bipe#407). */
+  addSession(token: string, agentId: string, deviceId: string, days: number, matrixAccessToken: string | null = null) {
+    this.db
+      .prepare("INSERT INTO sessions (token_hash, agent_id, device_id, expires_at, matrix_access_token) VALUES (?, ?, ?, ?, ?)")
+      .run(sha256(token), agentId, deviceId, this.now() + days * 86_400_000, matrixAccessToken);
   }
   session(token: string) {
-    const s = this.db.prepare("SELECT agent_id, device_id, expires_at FROM sessions WHERE token_hash = ?").get(sha256(token)) as
-      | { agent_id: string; device_id: string; expires_at: number }
+    const s = this.db.prepare("SELECT agent_id, device_id, expires_at, matrix_access_token FROM sessions WHERE token_hash = ?").get(sha256(token)) as
+      | { agent_id: string; device_id: string; expires_at: number; matrix_access_token: string | null }
       | undefined;
     if (!s || s.expires_at < this.now()) return undefined;
     return s;
+  }
+  /** Expired sessions keep no Matrix token. Their rows stay for the device reconcile (bipe#396). */
+  forgetExpiredMatrixTokens(): number {
+    return Number(this.db.prepare("UPDATE sessions SET matrix_access_token = NULL WHERE expires_at < ? AND matrix_access_token IS NOT NULL").run(this.now()).changes);
   }
   deleteSession(token: string) {
     this.db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(sha256(token));
