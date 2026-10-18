@@ -16,7 +16,7 @@ Status (13 October 2026): pilot slice. Not deployed anywhere.
 1. The company has one Bipe account. `cli setup` creates its cross-signing keys, secret storage and key backup, and shows the recovery key once.
 2. The bridge starts a fresh device of that account at each start. It unlocks cross-signing and the backup key with the recovery key.
 3. An agent signs in to the inbox. The bridge logs in a new device for that browser. The browser uploads its keys. The bridge signs the device and gives the browser the backup key, so the agent can read past chats.
-4. Removing an agent deletes that agent's devices.
+4. Removing an agent deletes that agent's devices. A removal, a logout or an expired session ends the bridge session at once. The Matrix device stays in the list as "Remoção pendente" until Matrix confirms the delete; the bridge retries at start and every 5 minutes (bipe#396).
 
 Chat content is never written to the bridge's database. It stays end-to-end encrypted in Matrix.
 

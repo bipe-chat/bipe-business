@@ -24,7 +24,8 @@ export type Conversation = {
 export type Note = { id: number; body: string; at: number; agent_id: string; agent_name: string };
 export type Detail = { conversation: Conversation; notes: Note[]; sameCustomer: Conversation[] };
 export type TeamMember = { id: string; email: string; name: string; role: Role; active: number; created_at: number };
-export type Device = { device_id: string; agent_id: string; created_at: number; name: string };
+// revoke_requested_at: a removal waits for Matrix to confirm (bipe#396). The bridge retries it.
+export type Device = { device_id: string; agent_id: string; created_at: number; revoke_requested_at: number | null; revoke_attempts: number; name: string };
 export type SavedReply = { id: number; shortcut: string; body: string };
 export type Stats = {
   days: number;

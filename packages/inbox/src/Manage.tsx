@@ -202,7 +202,11 @@ function Devices({ session }: { session: Session }) {
                 <td className="mono small">{d.device_id}</td>
                 <td>{formatDateTime(d.created_at)}</td>
                 <td className="right">
-                  {d.device_id === session.matrix.deviceId ? (
+                  {d.revoke_requested_at !== null ? (
+                    <span className="error small" title="A sessão nesse aparelho já terminou. O Bipe ainda não confirmou que o aparelho saiu da conta. O sistema tenta de novo a cada 5 minutos.">
+                      Remoção pendente
+                    </span>
+                  ) : d.device_id === session.matrix.deviceId ? (
                     <span className="muted small">Este aparelho</span>
                   ) : (
                     <button type="button" className="danger ghost" onClick={() => remove(d)}>
