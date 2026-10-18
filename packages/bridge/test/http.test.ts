@@ -1,10 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadConfig } from "../src/config.js";
 import { createApp } from "../src/http.js";
 import { checkWebhookSignature, hashPassword, newToken } from "../src/secrets.js";
 import { Bridge } from "../src/service.js";
 import { Store } from "../src/store.js";
+import { reconcileDevices, revokeDevice } from "../src/revoke.js";
 
 // HTTP routes with a fake Bipe side, a fake Bipe API and a fake company webhook receiver. No Matrix here.
 
@@ -172,4 +176,82 @@ test("inbox: saved replies are managed by managers", async () => {
   const r = await (await req("/inbox/saved-replies", { method: "PUT", json: { shortcut: "oi", body: "Oi! Como posso ajudar?" }, token: mt })).json();
   assert.equal(r.savedReplies[0].shortcut, "oi");
   assert.equal((await (await req("/inbox/saved-replies", { token: at })).json()).savedReplies.length, 1);
+});
+
+// bipe#396: a removal Matrix did not confirm stays visible as pending and is retried.
+const matrixDeleter = (failing: { on: boolean }, deleted: string[]) => async (deviceId: string) => {
+  if (failing.on) throw new Error("synthetic network error");
+  deleted.push(deviceId);
+};
+
+test("devices: a failed Matrix delete ends bridge access, stays pending and is retried once", async () => {
+  const { req, store, bipe, at, mt } = setup();
+  const failing = { on: true };
+  const deleted: string[] = [];
+  bipe.deleteDevice = matrixDeleter(failing, deleted);
+  const removed = await (await req("/inbox/devices/DEVA", { method: "DELETE", token: mt })).json();
+  const pending = removed.devices.find((d: any) => d.device_id === "DEVA");
+  assert.ok(pending, "the device stays in the list");
+  assert.ok(pending.revoke_requested_at);
+  assert.equal(pending.revoke_attempts, 1);
+  assert.equal((await req("/inbox/me", { token: at })).status, 401);
+
+  assert.deepEqual(await reconcileDevices(store, bipe), { done: 0, pending: 1 });
+  failing.on = false;
+  assert.deepEqual(await reconcileDevices(store, bipe), { done: 1, pending: 0 });
+  assert.deepEqual(await reconcileDevices(store, bipe), { done: 0, pending: 0 });
+  assert.deepEqual(deleted, ["DEVA"]);
+  assert.ok(!store.liveDevices().some((d) => d.device_id === "DEVA"));
+  assert.ok(store.auditLog().some((a: any) => a.action === "device.revoked" && a.detail === "DEVA"));
+});
+
+test("devices: logout and agent removal report a pending Matrix delete", async () => {
+  const { req, store, bipe, agent, at, mt } = setup();
+  bipe.deleteDevice = matrixDeleter({ on: true }, []);
+  const out = await (await req("/inbox/logout", { method: "POST", token: at })).json();
+  assert.equal(out.revocation, "pending");
+  assert.equal((await req("/inbox/me", { token: at })).status, 401);
+  store.addDevice("DEVA2", agent.id);
+  await req(`/inbox/agents/${agent.id}`, { method: "DELETE", token: mt });
+  assert.deepEqual(store.pendingRevocations().sort(), ["DEVA", "DEVA2"]);
+});
+
+test("devices: a confirmed Matrix delete removes the device at once", async () => {
+  const { req, store, bipe, at } = setup();
+  const deleted: string[] = [];
+  bipe.deleteDevice = matrixDeleter({ on: false }, deleted);
+  assert.equal((await (await req("/inbox/logout", { method: "POST", token: at })).json()).revocation, "done");
+  assert.deepEqual(deleted, ["DEVA"]);
+  assert.deepEqual(store.pendingRevocations(), []);
+});
+
+test("devices: pending removals survive a restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bridge-revoke-"));
+  try {
+    const path = join(dir, "bridge.db");
+    const first = new Store(path);
+    const a = first.addAgent({ email: "bia@loja.com", name: "Bia", role: "agent", password_hash: hashPassword("123456789012") });
+    first.addDevice("DEVA", a.id);
+    assert.equal(await revokeDevice(first, { deleteDevice: matrixDeleter({ on: true }, []) }, "DEVA"), "pending");
+    const second = new Store(path);
+    assert.deepEqual(second.pendingRevocations(), ["DEVA"]);
+    const deleted: string[] = [];
+    assert.deepEqual(await reconcileDevices(second, { deleteDevice: matrixDeleter({ on: false }, deleted) }), { done: 1, pending: 0 });
+    assert.deepEqual(deleted, ["DEVA"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("devices: a device whose sessions expired is removed from Matrix", async () => {
+  const store = new Store(":memory:");
+  const a = store.addAgent({ email: "bia@loja.com", name: "Bia", role: "agent", password_hash: hashPassword("123456789012") });
+  store.addDevice("OLD", a.id);
+  store.addSession(newToken(), a.id, "OLD", -1);
+  store.addDevice("LIVE", a.id);
+  store.addSession(newToken(), a.id, "LIVE", 1);
+  const deleted: string[] = [];
+  assert.deepEqual(await reconcileDevices(store, { deleteDevice: matrixDeleter({ on: false }, deleted) }), { done: 1, pending: 0 });
+  assert.deepEqual(deleted, ["OLD"]);
+  assert.deepEqual(store.liveDevices().map((d) => d.device_id), ["LIVE"]);
 });

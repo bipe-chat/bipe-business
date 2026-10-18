@@ -4,6 +4,7 @@ import { apiError, Content, SendRequest } from "./api.js";
 import { checkPassword, hashPassword, newToken, safeEqual } from "./secrets.js";
 import { Bridge, SendError } from "./service.js";
 import type { Agent, Status } from "./store.js";
+import { revokeDevice } from "./revoke.js";
 
 type Env = { Variables: { agent: Agent; deviceId: string; token: string } };
 
@@ -118,11 +119,10 @@ export function createApp(bridge: Bridge) {
 
   app.post("/inbox/logout", async (c) => {
     const deviceId = c.get("deviceId");
-    await bridge.bipe?.deleteDevice(deviceId).catch(() => {});
-    store.markDeviceRemoved(deviceId);
+    const revocation = await revokeDevice(store, bridge.bipe, deviceId);
     store.deleteSession(c.get("token"));
     store.audit("agent.logout", { agentId: c.get("agent").id, detail: deviceId });
-    return c.json({ ok: true });
+    return c.json({ ok: true, revocation });
   });
 
   app.get("/inbox/me", (c) => {
@@ -243,10 +243,7 @@ export function createApp(bridge: Bridge) {
     const id = c.req.param("id")!;
     if (!store.agent(id)) return c.json({ error: "not_found" }, 404);
     store.setAgentActive(id, false);
-    for (const d of store.liveDevices(id)) {
-      await bridge.bipe?.deleteDevice(d.device_id).catch(() => {});
-      store.markDeviceRemoved(d.device_id);
-    }
+    for (const d of store.liveDevices(id)) await revokeDevice(store, bridge.bipe, d.device_id);
     store.audit("agent.remove", { agentId: c.get("agent").id, detail: id });
     return c.json({ agents: store.agents() });
   });
@@ -254,8 +251,7 @@ export function createApp(bridge: Bridge) {
   app.delete("/inbox/devices/:deviceId", manager, async (c) => {
     const d = c.req.param("deviceId")!;
     if (!store.deviceAgent(d)) return c.json({ error: "not_found" }, 404);
-    await bridge.bipe?.deleteDevice(d).catch(() => {});
-    store.markDeviceRemoved(d);
+    await revokeDevice(store, bridge.bipe, d);
     store.audit("device.remove", { agentId: c.get("agent").id, detail: d });
     return c.json({ devices: store.liveDevices() });
   });

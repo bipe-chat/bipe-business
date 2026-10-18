@@ -81,7 +81,9 @@ CREATE TABLE IF NOT EXISTS agent_devices (
   device_id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL REFERENCES agents(id),
   created_at INTEGER NOT NULL,
-  removed_at INTEGER
+  removed_at INTEGER,
+  revoke_requested_at INTEGER,
+  revoke_attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,
@@ -115,6 +117,11 @@ export class Store {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     this.db.exec(SCHEMA);
+    // bipe#396: databases from before pending removals get the two columns.
+    const columns = (this.db.prepare("PRAGMA table_info(agent_devices)").all() as { name: string }[]).map((c) => c.name);
+    if (!columns.includes("revoke_requested_at")) {
+      this.db.exec("ALTER TABLE agent_devices ADD COLUMN revoke_requested_at INTEGER; ALTER TABLE agent_devices ADD COLUMN revoke_attempts INTEGER NOT NULL DEFAULT 0;");
+    }
   }
 
   tx<T>(fn: () => T): T {
@@ -263,18 +270,57 @@ export class Store {
   addDevice(deviceId: string, agentId: string) {
     this.db.prepare("INSERT OR REPLACE INTO agent_devices (device_id, agent_id, created_at) VALUES (?, ?, ?)").run(deviceId, agentId, this.now());
   }
+  /** Devices whose Matrix device is not confirmed gone. A pending removal has revoke_requested_at set. */
   liveDevices(agentId?: string) {
+    const columns = "d.device_id, d.agent_id, d.created_at, d.revoke_requested_at, d.revoke_attempts, a.name";
     const sql = agentId
-      ? "SELECT d.device_id, d.agent_id, d.created_at, a.name FROM agent_devices d JOIN agents a ON a.id = d.agent_id WHERE removed_at IS NULL AND agent_id = ?"
-      : "SELECT d.device_id, d.agent_id, d.created_at, a.name FROM agent_devices d JOIN agents a ON a.id = d.agent_id WHERE removed_at IS NULL";
-    return (agentId ? this.db.prepare(sql).all(agentId) : this.db.prepare(sql).all()) as { device_id: string; agent_id: string; created_at: number; name: string }[];
+      ? `SELECT ${columns} FROM agent_devices d JOIN agents a ON a.id = d.agent_id WHERE removed_at IS NULL AND agent_id = ?`
+      : `SELECT ${columns} FROM agent_devices d JOIN agents a ON a.id = d.agent_id WHERE removed_at IS NULL`;
+    return (agentId ? this.db.prepare(sql).all(agentId) : this.db.prepare(sql).all()) as {
+      device_id: string;
+      agent_id: string;
+      created_at: number;
+      revoke_requested_at: number | null;
+      revoke_attempts: number;
+      name: string;
+    }[];
   }
   deviceAgent(deviceId: string) {
     return this.db.prepare("SELECT agent_id FROM agent_devices WHERE device_id = ? AND removed_at IS NULL").get(deviceId) as { agent_id: string } | undefined;
   }
+  /** Matrix confirmed that the device is gone. */
   markDeviceRemoved(deviceId: string) {
-    this.db.prepare("UPDATE agent_devices SET removed_at = ? WHERE device_id = ?").run(this.now(), deviceId);
+    this.db.prepare("UPDATE agent_devices SET removed_at = ? WHERE device_id = ? AND removed_at IS NULL").run(this.now(), deviceId);
     this.db.prepare("DELETE FROM sessions WHERE device_id = ?").run(deviceId);
+  }
+  /** bipe#396: ends the device's bridge sessions now and records that its Matrix device must go. */
+  requestRevocation(deviceId: string) {
+    this.db
+      .prepare("UPDATE agent_devices SET revoke_requested_at = COALESCE(revoke_requested_at, ?) WHERE device_id = ? AND removed_at IS NULL")
+      .run(this.now(), deviceId);
+    this.db.prepare("DELETE FROM sessions WHERE device_id = ?").run(deviceId);
+  }
+  revocationFailed(deviceId: string) {
+    this.db.prepare("UPDATE agent_devices SET revoke_attempts = revoke_attempts + 1 WHERE device_id = ?").run(deviceId);
+  }
+  pendingRevocations() {
+    return (this.db.prepare("SELECT device_id FROM agent_devices WHERE revoke_requested_at IS NOT NULL AND removed_at IS NULL").all() as { device_id: string }[]).map(
+      (r) => r.device_id,
+    );
+  }
+  /** Devices whose bridge sessions all expired, with no removal asked yet. */
+  expiredDevices() {
+    const now = this.now();
+    return (
+      this.db
+        .prepare(
+          `SELECT d.device_id FROM agent_devices d
+            WHERE d.removed_at IS NULL AND d.revoke_requested_at IS NULL
+              AND EXISTS (SELECT 1 FROM sessions s WHERE s.device_id = d.device_id AND s.expires_at < ?)
+              AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.device_id = d.device_id AND s.expires_at >= ?)`,
+        )
+        .all(now, now) as { device_id: string }[]
+    ).map((r) => r.device_id);
   }
   addSession(token: string, agentId: string, deviceId: string, days: number) {
     this.db.prepare("INSERT INTO sessions (token_hash, agent_id, device_id, expires_at) VALUES (?, ?, ?, ?)").run(sha256(token), agentId, deviceId, this.now() + days * 86_400_000);
