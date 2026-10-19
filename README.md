@@ -72,6 +72,15 @@ Put HTTPS in front of port 8080.
 
 Other CLI commands: `agent list`, `saved-replies import <file.csv>` (columns `shortcut,text`), `templates import <file.json>` (see Templates), `templates list`.
 
+## Inbox session and browser security (bipe#407)
+
+- The bridge session is the cookie `bipe_inbox_session`: HttpOnly, Secure, SameSite=Strict, path `/inbox`. Page scripts cannot read it. Serve the inbox over HTTPS.
+- A write with the cookie needs the header `x-bipe-inbox: 1` and, when the browser sends `Origin`, the bridge's own host. Login needs the header too. Behind a reverse proxy, pass `Host` (or `X-Forwarded-Host`) unchanged.
+- The inbox's Matrix access token stays in the bridge database with its session. The inbox reads it from `GET /inbox/session` after each page load and keeps it in memory only. An expired session loses its token on the next device reconcile. Logout deletes the session and the cookie.
+- The Matrix client needs the token while it runs, so a script that runs in the page can still use it. The CSP lowers that risk; it does not remove it. The device's encrypted crypto store stays in IndexedDB, as before.
+- The inbox page and its files carry an enforced Content Security Policy (`inboxCsp()` in `packages/bridge/src/http.ts`): scripts from the bridge only, WebAssembly for the Rust crypto, connections to the bridge and the homeserver only, no frames. A reverse proxy must pass the header on and must not add a weaker one.
+- A browser with a session from an older build (in localStorage) loses it once and signs in again.
+
 ## Develop
 
 ```

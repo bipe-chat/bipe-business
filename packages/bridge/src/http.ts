@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import { apiError, Content, SendRequest } from "./api.js";
 import { checkPassword, hashPassword, newToken, safeEqual } from "./secrets.js";
@@ -6,7 +7,49 @@ import { Bridge, SendError } from "./service.js";
 import type { Agent, Status } from "./store.js";
 import { revokeDevice } from "./revoke.js";
 
-type Env = { Variables: { agent: Agent; deviceId: string; token: string } };
+type Env = { Variables: { agent: Agent; deviceId: string; token: string; matrixAccessToken: string | null } };
+
+/**
+ * bipe#407: the inbox session is an HttpOnly cookie, so page scripts never read the bridge token. Bearer stays for
+ * scripts and tests; the inbox app no longer gets a token to send.
+ */
+export const SESSION_COOKIE = "bipe_inbox_session";
+/** A cookie-authenticated write must carry this header. A cross-site form or image cannot set it. */
+export const CSRF_HEADER = "x-bipe-inbox";
+
+/**
+ * bipe#407: the inbox page's Content Security Policy. Scripts from the bridge only, plus WebAssembly for the Matrix
+ * Rust crypto. The page talks to the bridge and to the homeserver only. No frames, no plugins, no inline script.
+ */
+export function inboxCsp(homeserverUrl: string): string {
+  const homeserver = new URL(homeserverUrl).origin;
+  return [
+    "default-src 'none'",
+    "script-src 'self' 'wasm-unsafe-eval'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' blob:",
+    "font-src 'self'",
+    `connect-src 'self' ${homeserver}`,
+    "worker-src 'self' blob:",
+    "manifest-src 'self'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    "object-src 'none'",
+  ].join("; ");
+}
+
+/** True when the request's Origin, if any, is the bridge's own host. */
+function sameOrigin(c: Context): boolean {
+  const origin = c.req.header("origin");
+  if (!origin) return true;
+  try {
+    return new URL(origin).host === (c.req.header("x-forwarded-host") ?? c.req.header("host"));
+  } catch {
+    return false;
+  }
+}
 
 /** Small in-memory limiter: `max` hits per `windowMs` per key. One bridge instance only. */
 class Limiter {
@@ -49,6 +92,14 @@ export function createApp(bridge: Bridge) {
   // A read is logged once per agent and conversation per 10 minutes, not on every refresh.
   const lastRead = new Map<string, number>();
 
+  // bipe#407: on every answer. The inbox page gets its CSP where it is served (server.ts).
+  app.use("*", async (c, next) => {
+    await next();
+    c.header("x-content-type-options", "nosniff");
+    c.header("referrer-policy", "no-referrer");
+    c.header("x-frame-options", "DENY");
+  });
+
   app.get("/health", (c) => c.json({ ok: true }));
 
   // ------------------------------------------------------------ API for the company's own systems (ADR 0082)
@@ -66,6 +117,7 @@ export function createApp(bridge: Bridge) {
 
   // ------------------------------------------------------------ inbox: sign-in
   app.post("/inbox/login", async (c) => {
+    if (c.req.header(CSRF_HEADER) !== "1" || !sameOrigin(c)) return c.json({ error: "forbidden" }, 403);
     const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
     let body: z.infer<typeof Login>;
     try {
@@ -80,10 +132,11 @@ export function createApp(bridge: Bridge) {
     const m = await bridge.bipe.login(`Inbox: ${agent.name}`);
     const token = newToken();
     store.addDevice(m.deviceId, agent.id);
-    store.addSession(token, agent.id, m.deviceId, cfg.sessionDays);
+    store.addSession(token, agent.id, m.deviceId, cfg.sessionDays, m.accessToken);
     store.audit("agent.login", { agentId: agent.id, detail: m.deviceId });
+    setCookie(c, SESSION_COOKIE, token, { httpOnly: true, secure: true, sameSite: "Strict", path: "/inbox", maxAge: cfg.sessionDays * 86_400 });
+    c.header("cache-control", "no-store");
     return c.json({
-      token,
       agent: { id: agent.id, name: agent.name, email: agent.email, role: agent.role },
       matrix: { homeserverUrl: cfg.matrix.homeserverUrl, userId: m.userId, deviceId: m.deviceId, accessToken: m.accessToken },
       company: { handle: cfg.matrix.handle },
@@ -93,14 +146,33 @@ export function createApp(bridge: Bridge) {
   // Everything below needs a session.
   app.use("/inbox/*", async (c, next) => {
     const auth = c.req.header("authorization") ?? "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const token = bearer || getCookie(c, SESSION_COOKIE) || "";
+    // A cookie goes with every request the browser makes, so a cookie write needs the header and the same origin.
+    if (!bearer && token && c.req.method !== "GET" && c.req.method !== "HEAD" && (c.req.header(CSRF_HEADER) !== "1" || !sameOrigin(c))) {
+      return c.json({ error: "forbidden" }, 403);
+    }
     const s = token ? store.session(token) : undefined;
     const agent = s ? store.agent(s.agent_id) : undefined;
     if (!s || !agent || !agent.active) return c.json({ error: "unauthorized" }, 401);
     c.set("agent", agent);
     c.set("deviceId", s.device_id);
     c.set("token", token);
+    c.set("matrixAccessToken", s.matrix_access_token);
+    c.header("cache-control", "no-store");
     await next();
+  });
+
+  /** bipe#407: after a page load the inbox reads its session here, with the cookie. Nothing is kept in browser storage. */
+  app.get("/inbox/session", (c) => {
+    const a = c.get("agent");
+    const matrixAccessToken = c.get("matrixAccessToken");
+    if (!matrixAccessToken) return c.json({ error: "unauthorized" }, 401);
+    return c.json({
+      agent: { id: a.id, name: a.name, email: a.email, role: a.role },
+      matrix: { homeserverUrl: cfg.matrix.homeserverUrl, userId: cfg.matrix.userId, deviceId: c.get("deviceId"), accessToken: matrixAccessToken },
+      company: { handle: cfg.matrix.handle },
+    });
   });
 
   const manager = async (c: Context<Env>, next: () => Promise<void>) => {
@@ -121,6 +193,7 @@ export function createApp(bridge: Bridge) {
     const deviceId = c.get("deviceId");
     const revocation = await revokeDevice(store, bridge.bipe, deviceId);
     store.deleteSession(c.get("token"));
+    deleteCookie(c, SESSION_COOKIE, { path: "/inbox", secure: true });
     store.audit("agent.logout", { agentId: c.get("agent").id, detail: deviceId });
     return c.json({ ok: true, revocation });
   });

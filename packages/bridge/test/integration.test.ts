@@ -118,7 +118,8 @@ test("bridge end to end: customer writes, company answers, question and tap, age
 
     // 6. An agent signs in: new device, signed by the bridge, gets the backup key, reads history.
     store.addAgent({ email: "bia@loja.test", name: "Bia", role: "agent", password_hash: hashPassword("123456789012") });
-    const login = await (await app.request("/inbox/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "bia@loja.test", password: "123456789012" }) })).json();
+    const loginRes = await app.request("/inbox/login", { method: "POST", headers: { "content-type": "application/json", "x-bipe-inbox": "1" }, body: JSON.stringify({ email: "bia@loja.test", password: "123456789012" }) });
+    const login = { ...(await loginRes.json()), token: /bipe_inbox_session=([^;]+)/.exec(loginRes.headers.get("set-cookie") ?? "")?.[1] };
     assert.ok(login.token && login.matrix.deviceId);
     const bia = await client({ userId: login.matrix.userId, accessToken: login.matrix.accessToken, deviceId: login.matrix.deviceId });
     const ready = await waitFor("device ready", async () => {

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.js";
-import { createApp } from "../src/http.js";
+import { createApp, inboxCsp } from "../src/http.js";
 import { checkWebhookSignature, hashPassword, newToken } from "../src/secrets.js";
 import { Bridge } from "../src/service.js";
 import { Store } from "../src/store.js";
@@ -254,4 +254,39 @@ test("devices: a device whose sessions expired is removed from Matrix", async ()
   assert.deepEqual(await reconcileDevices(store, { deleteDevice: matrixDeleter({ on: false }, deleted) }), { done: 1, pending: 0 });
   assert.deepEqual(deleted, ["OLD"]);
   assert.deepEqual(store.liveDevices().map((d) => d.device_id), ["LIVE"]);
+});
+
+test("inbox session (bipe#407): HttpOnly cookie, CSRF header on writes, Matrix token from the bridge", async () => {
+  const { app, store, agent } = setup();
+  const token = newToken();
+  store.addDevice("DEVC", agent.id);
+  store.addSession(token, agent.id, "DEVC", 1, "syt_matrix");
+  const cookie = `bipe_inbox_session=${token}`;
+  const s = await app.request("/inbox/session", { headers: { cookie } });
+  assert.equal(s.status, 200);
+  assert.equal(s.headers.get("cache-control"), "no-store");
+  assert.equal(s.headers.get("x-content-type-options"), "nosniff");
+  const body = await s.json();
+  assert.equal(body.matrix.accessToken, "syt_matrix");
+  assert.equal(body.matrix.deviceId, "DEVC");
+  assert.equal(body.token, undefined);
+  // A cookie write without the header, or from another site, is refused before anything runs.
+  assert.equal((await app.request(`/inbox/agents/${agent.id}`, { method: "DELETE", headers: { cookie } })).status, 403);
+  assert.equal((await app.request("/inbox/logout", { method: "POST", headers: { cookie, "x-bipe-inbox": "1", origin: "https://evil.test", host: "inbox.loja.com" } })).status, 403);
+  assert.equal((await app.request("/inbox/login", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 403);
+  // Expired sessions keep no Matrix token.
+  store.addSession(newToken(), agent.id, "DEVC", -1, "syt_old");
+  assert.equal(store.forgetExpiredMatrixTokens(), 1);
+  const out = await app.request("/inbox/logout", { method: "POST", headers: { cookie, "x-bipe-inbox": "1" } });
+  assert.equal(out.status, 200);
+  assert.match(out.headers.get("set-cookie") ?? "", /bipe_inbox_session=;/);
+  assert.equal((await app.request("/inbox/session", { headers: { cookie } })).status, 401);
+});
+
+test("inbox CSP (bipe#407): no inline script, WebAssembly allowed, homeserver only", () => {
+  const csp = inboxCsp("https://matrix.bipe.net.br/");
+  assert.match(csp, /script-src 'self' 'wasm-unsafe-eval';/);
+  assert.match(csp, /connect-src 'self' https:\/\/matrix.bipe.net.br;/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.doesNotMatch(csp, /'unsafe-eval'|\*/);
 });

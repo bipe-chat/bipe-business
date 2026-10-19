@@ -5,7 +5,11 @@ import type { Question, Status } from "./lib.ts";
 export type Role = "agent" | "manager";
 export type AgentInfo = { id: string; name: string; email: string; role: Role };
 export type MatrixCreds = { homeserverUrl: string; userId: string; deviceId: string; accessToken: string };
-export type Session = { token: string; agent: AgentInfo; matrix: MatrixCreds; company: { handle: string } };
+/**
+ * bipe#407: the bridge session is an HttpOnly cookie that scripts cannot read. The Matrix credential comes from
+ * `GET /inbox/session` after each page load and lives in memory only. Nothing goes to browser storage.
+ */
+export type Session = { agent: AgentInfo; matrix: MatrixCreds; company: { handle: string } };
 
 export type Conversation = {
   id: string;
@@ -36,24 +40,15 @@ export type Stats = {
 };
 export type AuditRow = { id: number; at: number; agent_id: string | null; agent_name: string | null; action: string; conversation_id: string | null; detail: string | null };
 
-const KEY = "bipe-inbox-session";
+/** Builds before bipe#407 kept the whole session, both tokens included, under this key. */
+const LEGACY_KEY = "bipe-inbox-session";
 
-export function loadSession(): Session | null {
+/** Removes a session that an older build left in localStorage. The person signs in again once. */
+export function clearLegacySession() {
   try {
-    const raw = localStorage.getItem(KEY);
-    const s = raw ? (JSON.parse(raw) as Session) : null;
-    return s?.token && s.matrix?.deviceId ? s : null;
+    localStorage.removeItem(LEGACY_KEY);
   } catch {
-    return null;
-  }
-}
-
-export function saveSession(s: Session | null) {
-  try {
-    if (s) localStorage.setItem(KEY, JSON.stringify(s));
-    else localStorage.removeItem(KEY);
-  } catch {
-    // Private window or blocked storage: the session lives until the tab closes.
+    // Blocked storage: there is nothing to remove.
   }
 }
 
@@ -70,12 +65,8 @@ export class ApiError extends Error {
   }
 }
 
-let token: string | null = null;
 let onUnauthorized: () => void = () => {};
 
-export function setToken(t: string | null) {
-  token = t;
-}
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }
@@ -85,7 +76,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   try {
     res = await fetch(path, {
       method,
-      headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+      credentials: "same-origin",
+      // The bridge refuses a cookie write without this header (CSRF, bipe#407).
+      headers: { "x-bipe-inbox": "1", ...(body !== undefined ? { "content-type": "application/json" } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -93,7 +86,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   }
   const json: any = await res.json().catch(() => null);
   if (!res.ok) {
-    if (res.status === 401 && path !== "/inbox/login") onUnauthorized();
+    if (res.status === 401 && path !== "/inbox/login" && path !== "/inbox/session") onUnauthorized();
     const code = typeof json?.error === "string" ? json.error : typeof json?.error?.code === "string" ? json.error.code : String(res.status);
     throw new ApiError(res.status, code, json);
   }
@@ -119,6 +112,7 @@ export function errorText(e: unknown): string {
 
 export const api = {
   login: (email: string, password: string) => call<Session>("POST", "/inbox/login", { email, password }),
+  session: () => call<Session>("GET", "/inbox/session"),
   logout: () => call<{ ok: true }>("POST", "/inbox/logout", {}),
   deviceReady: () => call<{ backup: { key: string; version: string } | null }>("POST", "/inbox/device/ready", {}),
 
