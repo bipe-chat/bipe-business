@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { loadConfig } from "./config.js";
 import { createApp, inboxCsp } from "./http.js";
+import { contentWarning, createMcpApp } from "./mcp.js";
 import { BipeSide } from "./matrix.js";
 import { RECONCILE_INTERVAL_MS, reconcileDevices } from "./revoke.js";
 import { Bridge } from "./service.js";
@@ -43,9 +44,17 @@ if (inboxDir) {
 const server = serve({ fetch: app.fetch, port: cfg.port });
 console.log(`bridge: listening on ${cfg.port}`);
 
+// bipe#437: MCP is off unless BRIDGE_MCP is local or remote. `local` listens on 127.0.0.1 only.
+const mcpServer = cfg.mcp.mode === "local" ? serve({ fetch: createMcpApp(bridge).fetch, port: cfg.mcp.port, hostname: "127.0.0.1" }) : null;
+if (cfg.mcp.mode === "local") console.log(`bridge: MCP local on http://127.0.0.1:${cfg.mcp.port}/mcp`);
+if (cfg.mcp.mode === "remote") console.log(`bridge: MCP remote on ${cfg.publicUrl}/mcp`);
+const warning = contentWarning(cfg);
+if (warning) console.log(warning);
+
 async function shutdown() {
   clearInterval(reconcileTimer);
   server.close();
+  mcpServer?.close();
   await bipe.stop();
   process.exit(0);
 }

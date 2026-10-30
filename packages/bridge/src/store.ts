@@ -5,6 +5,9 @@ import { sha256 } from "./secrets.js";
 // The bridge's own records, on the company's server. Chat content is never stored here:
 // it stays end-to-end encrypted in Matrix.
 
+/** The author of notes that an MCP client adds (bipe#437). It is not an agent. */
+export const MCP_AGENT_ID = "mcp";
+
 export type Status = "open" | "waiting" | "solved";
 export type Role = "agent" | "manager";
 
@@ -223,7 +226,11 @@ export class Store {
   }
   notes(conversationId: string) {
     return this.db
-      .prepare("SELECT n.id, n.body, n.at, n.agent_id, a.name AS agent_name FROM notes n JOIN agents a ON a.id = n.agent_id WHERE conversation_id = ? ORDER BY n.at")
+      // bipe#437: a note from an MCP client has agent_id `mcp` and no agent row.
+      .prepare(
+        `SELECT n.id, n.body, n.at, n.agent_id, COALESCE(a.name, CASE WHEN n.agent_id = '${MCP_AGENT_ID}' THEN 'Assistente (MCP)' END) AS agent_name
+           FROM notes n LEFT JOIN agents a ON a.id = n.agent_id WHERE conversation_id = ? ORDER BY n.at`,
+      )
       .all(conversationId) as Row[];
   }
 

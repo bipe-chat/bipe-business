@@ -1,0 +1,78 @@
+{
+  "$comment": "Copy of the surface \"bridge\" rows of bipe-shared registries/mcp-tools.json (bipe-chat/bipe#436, #437). Do not edit here: change the registry in bipe-shared, then copy the rows again. test/mcp.test.ts compares this file with ../bipe-shared when that checkout is present.",
+  "version": 1,
+  "tools": [
+    {
+      "name": "list_conversations",
+      "surface": "bridge",
+      "class": "metadata",
+      "writes": "none",
+      "scope": "conversations:read",
+      "en": "List customer conversations with status, assignee, tags and times. No text.",
+      "pt": "Lista as conversas com clientes: status, responsável, etiquetas e horários. Sem texto."
+    },
+    {
+      "name": "read_conversation",
+      "surface": "bridge",
+      "class": "content",
+      "writes": "none",
+      "scope": "content:read",
+      "en": "Read the messages of one customer conversation.",
+      "pt": "Lê as mensagens de uma conversa com cliente."
+    },
+    {
+      "name": "send_message",
+      "surface": "bridge",
+      "class": "content",
+      "writes": "send",
+      "scope": "content:send",
+      "en": "Send a message to a customer as the company. The customer sees that a program answers.",
+      "pt": "Manda uma mensagem ao cliente em nome da empresa. O cliente vê que um programa responde."
+    },
+    {
+      "name": "send_question",
+      "surface": "bridge",
+      "class": "content",
+      "writes": "send",
+      "scope": "content:send",
+      "en": "Send a question card with answer buttons to a customer.",
+      "pt": "Manda ao cliente uma pergunta com botões de resposta."
+    },
+    {
+      "name": "assign",
+      "surface": "bridge",
+      "class": "metadata",
+      "writes": "state",
+      "scope": "conversations:write",
+      "en": "Assign a conversation to a person on the team.",
+      "pt": "Passa uma conversa para uma pessoa da equipe."
+    },
+    {
+      "name": "set_status",
+      "surface": "bridge",
+      "class": "metadata",
+      "writes": "state",
+      "scope": "conversations:write",
+      "en": "Set the status of a conversation: open, waiting or done.",
+      "pt": "Muda o status de uma conversa: aberta, aguardando ou resolvida."
+    },
+    {
+      "name": "tag",
+      "surface": "bridge",
+      "class": "metadata",
+      "writes": "state",
+      "scope": "conversations:write",
+      "en": "Add or remove a tag on a conversation.",
+      "pt": "Põe ou tira uma etiqueta de uma conversa."
+    },
+    {
+      "name": "add_note",
+      "surface": "bridge",
+      "class": "content",
+      "writes": "state",
+      "scope": "content:notes",
+      "en": "Add an internal note to a conversation. The customer never sees it.",
+      "pt": "Põe uma nota interna na conversa. O cliente nunca vê."
+    }
+  ]
+}

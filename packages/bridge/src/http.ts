@@ -2,10 +2,12 @@ import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
 import { apiError, Content, SendRequest } from "./api.js";
-import { checkPassword, hashPassword, newToken, safeEqual } from "./secrets.js";
+import { findToken } from "./config.js";
+import { checkPassword, hashPassword, newToken } from "./secrets.js";
 import { Bridge, SendError } from "./service.js";
 import type { Agent, Status } from "./store.js";
 import { revokeDevice } from "./revoke.js";
+import { mountMcp } from "./mcp.js";
 
 type Env = { Variables: { agent: Agent; deviceId: string; token: string; matrixAccessToken: string | null } };
 
@@ -105,8 +107,10 @@ export function createApp(bridge: Bridge) {
   // ------------------------------------------------------------ API for the company's own systems (ADR 0082)
   app.post("/v1/messages", async (c) => {
     const auth = c.req.header("authorization") ?? "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    if (!token || !cfg.apiTokens.some((t) => safeEqual(t, token))) return c.json(apiError("unauthorized", "invalid access token"), 401);
+    const token = findToken(cfg.apiTokens, auth.startsWith("Bearer ") ? auth.slice(7) : "");
+    if (!token) return c.json(apiError("unauthorized", "invalid access token"), 401);
+    // bipe#437: a token with scopes needs content:send here. A token without scopes has it (LEGACY_SCOPES).
+    if (!token.scopes.has("content:send")) return c.json(apiError("unauthorized", "this token lacks the scope content:send"), 403);
     try {
       const req = SendRequest.parse(await c.req.json());
       return c.json(await bridge.send(req));
@@ -114,6 +118,10 @@ export function createApp(bridge: Bridge) {
       return sendErr(c, e);
     }
   });
+
+  // ------------------------------------------------------------ MCP (ADR 0130, bipe#437)
+  // `remote` only. `local` serves /mcp on its own 127.0.0.1 listener (server.ts). `off` (the default) serves nothing.
+  if (cfg.mcp.mode === "remote") mountMcp(app, bridge, { localOnly: false });
 
   // ------------------------------------------------------------ inbox: sign-in
   app.post("/inbox/login", async (c) => {

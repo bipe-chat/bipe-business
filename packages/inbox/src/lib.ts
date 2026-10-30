@@ -209,6 +209,9 @@ const AUDIT_LABEL: Record<string, string> = {
 };
 
 export function auditLabel(action: string): string {
+  // bipe#437: calls from an MCP client are `mcp.<tool>`; a refused call is `mcp.denied`.
+  if (action === "mcp.denied") return "Assistente (MCP): recusado";
+  if (action.startsWith("mcp.")) return `Assistente (MCP): ${action.slice(4)}`;
   return AUDIT_LABEL[action] ?? action;
 }
 
