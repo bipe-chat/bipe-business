@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { questionFallback, questionProblem, renderTemplate, type Content, type ErrorCode, type Question, type SendRequest, type WebhookEvent } from "./api.js";
-import type { BipeInbound, BipeSide } from "./matrix.js";
+import type { BipeInbound, BipeSide, ExtraContent } from "./matrix.js";
 import { OutboundWebhook } from "./outbound.js";
 import type { Conversation, Store } from "./store.js";
 
@@ -68,31 +68,34 @@ export class Bridge {
 
   // ---------------------------------------------------------------- outbound
 
-  /** Sends one API request on Bipe. The customer must have written first. */
-  async send(req: SendRequest, agentId: string | null = null) {
+  /**
+   * Sends one API request on Bipe. The customer must have written first.
+   * `extra`: fields added to the Matrix event, such as the MCP assistant marker (bipe#437).
+   */
+  async send(req: SendRequest, agentId: string | null = null, extra: ExtraContent = {}) {
     const conv = this.conversationFor(await this.resolveHandle(req.to));
     // No cold messages: a company writes only to a customer who wrote first (ADR 0016, ADR 0037).
     if (!conv) throw new SendError(400, "customer_must_write_first", "no conversation with this customer: the customer must write first");
-    const id = await this.sendContent(conv, req.content);
+    const id = await this.sendContent(conv, req.content, extra);
     this.store.markOutbound(conv.id);
     if (agentId) this.store.audit("message.send", { agentId, conversationId: conv.id });
     return { id, conversation: conv.id, customer: conv.contact };
   }
 
-  private async sendContent(conv: Conversation, c: Content): Promise<string> {
-    if ("text" in c) return this.bipe!.sendText(conv.room_id, c.text);
+  private async sendContent(conv: Conversation, c: Content, extra: ExtraContent): Promise<string> {
+    if ("text" in c) return this.bipe!.sendText(conv.room_id, c.text, extra);
     if ("template" in c) {
       const t = this.store.template(c.template.name, c.template.language);
       if (!t) throw new SendError(404, "unknown_template", `template ${c.template.name} (${c.template.language}) does not exist`);
-      return this.bipe!.sendText(conv.room_id, renderTemplate(t.body, c.template.params));
+      return this.bipe!.sendText(conv.room_id, renderTemplate(t.body, c.template.params), extra);
     }
-    return this.sendQuestion(conv, c.question);
+    return this.sendQuestion(conv, c.question, extra);
   }
 
-  private async sendQuestion(conv: Conversation, q: Question) {
+  private async sendQuestion(conv: Conversation, q: Question, extra: ExtraContent) {
     const p = questionProblem(q);
     if (p) throw new SendError(400, "invalid_question", p);
-    return this.bipe!.sendQuestion(conv.room_id, q.text, q.options, questionFallback(q));
+    return this.bipe!.sendQuestion(conv.room_id, q.text, q.options, questionFallback(q), extra);
   }
 
   /** `@handle` (no server part) becomes the Matrix ID through the Bipe API, with the company account's token. */

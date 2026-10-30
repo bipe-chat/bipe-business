@@ -4,6 +4,7 @@ import { BipeSide } from "./matrix.js";
 import { hashPassword } from "./secrets.js";
 import { Store } from "./store.js";
 import { importTemplates } from "./templates.js";
+import { runStdioRelay } from "./mcp-stdio.js";
 
 // Company-side admin commands. Run inside the bridge container: `node dist/src/cli.js <command>`.
 
@@ -13,11 +14,13 @@ const USAGE = `commands:
   agent list
   saved-replies import <file.csv>         columns: shortcut,text (header row)
   templates import <file.json>            list of {name, language, category, body}; marketing is refused (ADR 0037)
-  templates list`;
+  templates list
+  mcp                                     MCP on stdin/stdout for a client on this host; needs BRIDGE_MCP and BRIDGE_MCP_TOKEN`;
 
 const [cmd, sub, ...rest] = process.argv.slice(2);
 const cfg = loadConfig();
-const store = new Store(cfg.dbPath);
+// `mcp` talks to the running bridge only; it does not open the database.
+const store = cmd === "mcp" ? (null as unknown as Store) : new Store(cfg.dbPath);
 
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
@@ -42,6 +45,10 @@ function parseCsv(text: string): string[][] {
 }
 
 async function main() {
+  if (cmd === "mcp") {
+    await runStdioRelay(cfg);
+    return;
+  }
   if (cmd === "setup") {
     const bipe = new BipeSide({ ...cfg.matrix, recoveryKey: "" }, store);
     await bipe.start();

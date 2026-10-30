@@ -2,7 +2,7 @@
 
 The company's Bipe inbox and API, run by the company. Decisions: ADRs 0069, 0078, 0079, 0081 and 0082 in `bipe-chat/bipe` (`docs/adr/`). Plan: `bipe/docs/business-track.md`.
 
-Status (13 October 2026): pilot slice. Not deployed anywhere.
+Status (13 October 2026): pilot slice. Not deployed anywhere. MCP endpoint added 30 October 2026 (bipe#437).
 
 ## Parts
 
@@ -30,6 +30,7 @@ Content-Type: application/json
 { "to": "@ana", "text": "Seu pedido saiu para entrega." }
 ```
 
+- The token needs the scope `content:send`. A token with no scope list has it (see Token scopes).
 - `to`: the customer's @handle, Matrix ID, room ID, or the inbox conversation ID. The customer must have written first (error `customer_must_write_first` otherwise).
 - Send exactly one of:
   - `text`: a string.
@@ -55,6 +56,83 @@ Each request has the header `Bipe-Signature: t=<unix seconds>,v1=<hex>`. `v1` is
 ### Templates
 
 `templates import <file.json>` reads a list of `{ "name", "language", "category", "body" }`. `name` uses a to z, 0 to 9 and `_`. `category` is `utility` or `authentication`; the bridge refuses anything else.
+
+### Token scopes
+
+`BRIDGE_API_TOKENS` is a comma-separated list. Each item is `token` or `token:scope1+scope2`. The text after the first `:` is the scope list, so a token must not contain `:`.
+
+| Scope | Gives |
+|---|---|
+| `conversations:read` | MCP `list_conversations`: status, assignee, tags, times. No text. |
+| `conversations:write` | MCP `assign`, `set_status`, `tag`. |
+| `content:read` | MCP `read_conversation`: message text. |
+| `content:send` | `POST /v1/messages`, MCP `send_message` and `send_question`. |
+| `content:notes` | MCP `add_note`. |
+
+- A token with no scope list gets `content:send` only. Setups from before scopes keep working.
+- A token without `content:send` gets 403 on `POST /v1/messages`.
+- An unknown scope name stops the bridge at start.
+
+Example: `BRIDGE_API_TOKENS=erp-token,assistant-token:conversations:read+conversations:write`
+
+## MCP for AI assistants (ADR 0130, bipe#437)
+
+The bridge can serve the Model Context Protocol (MCP), so an AI assistant can work the inbox. The tools are the `bridge` rows of bipe-shared `registries/mcp-tools.json`, copied to `packages/bridge/src/mcp-tools.json`.
+
+| Tool | Scope | What it does |
+|---|---|---|
+| `list_conversations` | `conversations:read` | Lists conversations: status, assignee, tags, times. No text. |
+| `read_conversation` | `content:read` | Reads the newest messages of one conversation. |
+| `send_message` | `content:send` | Sends text or a template to a customer. |
+| `send_question` | `content:send` | Sends a question with answer buttons. |
+| `assign` | `conversations:write` | Assigns a conversation to an agent (ID or email), or removes the assignee. |
+| `set_status` | `conversations:write` | Sets `open`, `waiting` or `solved`. |
+| `tag` | `conversations:write` | Adds or removes one tag. |
+| `add_note` | `content:notes` | Adds an internal note. The customer never sees it. |
+
+Rules:
+
+- `BRIDGE_MCP=off` is the default. Then the bridge serves no MCP.
+- Choose `BRIDGE_MCP=local`. The bridge then serves `/mcp` on `127.0.0.1:BRIDGE_MCP_PORT` (default 8081) only, and `node dist/src/cli.js mcp` serves MCP on stdin and stdout. The local listener refuses a request whose `Host` is not `127.0.0.1` or `localhost`.
+- `BRIDGE_MCP=remote` serves `/mcp` on the public port, next to `/v1/messages`. Use it only when the assistant cannot run on the bridge host. Put HTTPS in front.
+- Every MCP request needs `Authorization: Bearer <token>`. The client sees only the tools that the token's scopes allow. A call to another tool gets HTTP 403 (JSON-RPC error `-32003`), and the audit records `mcp.denied`.
+- The bridge reads message text from its own Matrix client for each `read_conversation` call. It does not store the text.
+- A message from `send_message` or `send_question` carries `"chat.bipe.assistant": {"client": "<MCP client name>"}`, so the customer's app shows that a program answers (ADR 0035). The customer must have written first, as on `POST /v1/messages`.
+- The audit records each call as `mcp.<tool>` with the conversation ID and the event ID. It never records text.
+- When MCP is on and a token has a `content:` scope, the bridge logs one line at start: content can leave this server to the model that the MCP client uses. That model can be outside Brazil. The company chooses the model and is responsible for that transfer (ADR 0130).
+
+### Connect a client on the bridge host (stdio, recommended)
+
+Settings: `BRIDGE_MCP=local`, a token in `BRIDGE_API_TOKENS` with the scopes you want, and the same token in `BRIDGE_MCP_TOKEN`. The `mcp` command sends each message to the running bridge, so the bridge must run.
+
+```json
+{
+  "mcpServers": {
+    "bipe-inbox": {
+      "command": "docker",
+      "args": ["exec", "-i", "<bridge container>", "node", "dist/src/cli.js", "mcp"]
+    }
+  }
+}
+```
+
+Without Docker, use `"command": "node", "args": ["/path/to/packages/bridge/dist/src/cli.js", "mcp"]` with the same environment as the bridge.
+
+### Connect a client over HTTP
+
+```json
+{
+  "mcpServers": {
+    "bipe-inbox": {
+      "type": "http",
+      "url": "http://127.0.0.1:8081/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
+    }
+  }
+}
+```
+
+With `BRIDGE_MCP=remote`, the URL is `https://<bridge>/mcp`.
 
 ## Run it
 
@@ -101,6 +179,8 @@ BIPE_TEST_HS=http://127.0.0.1:8008 pnpm --filter ./packages/bridge test
 
 ## Not built yet
 
+- The program marker on messages that `POST /v1/messages` sends. Only MCP sends carry `chat.bipe.assistant` now.
+- Showing the `chat.bipe.assistant` label in the Bipe apps for business messages (the apps label it for personal assistant sends, bipe-shared `docs/mcp.md`).
 - Billing (waits for the pilot, ADR 0075).
 - Pix charge cards (ADR 0080).
 - A Bipe-styled question card in the apps. Questions show with Element X's poll view for now.

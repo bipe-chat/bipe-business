@@ -16,6 +16,23 @@ export type BipeInbound =
   | { kind: "answer"; roomId: string; eventId: string; sender: string; senderName: string | null; at: number; questionId: string; optionIds: string[] }
   | { kind: "invite"; roomId: string; sender: string; senderName: string | null; at: number };
 
+/**
+ * One message of a conversation, read from the live Matrix client for MCP `read_conversation` (bipe#437).
+ * It is built in memory for one answer and never written to the database or a log.
+ */
+export type RecentMessage = {
+  id: string;
+  at: string;
+  from: "customer" | "company";
+  sender: string;
+  text?: string;
+  question?: { text: string; options: string[] };
+  answer?: { question: string; options: string[] };
+};
+
+/** Extra fields on a sent event, such as the assistant marker `chat.bipe.assistant` (bipe-shared mcp-tools.json). */
+export type ExtraContent = Record<string, unknown>;
+
 export type Persist = { get(k: string): string | undefined; set(k: string, v: string): void };
 
 export class BipeSide {
@@ -193,20 +210,20 @@ export class BipeSide {
     await this.client.joinRoom(roomId);
   }
 
-  async sendText(roomId: string, body: string): Promise<string> {
-    const r = await this.client.sendEvent(roomId, sdk.EventType.RoomMessage, { msgtype: sdk.MsgType.Text, body });
+  async sendText(roomId: string, body: string, extra: ExtraContent = {}): Promise<string> {
+    const r = await this.client.sendEvent(roomId, sdk.EventType.RoomMessage, { ...extra, msgtype: sdk.MsgType.Text, body } as any);
     return r.event_id;
   }
 
   /** A structured question as a single-choice poll (ADR 0081), with a numbered text fallback. */
-  async sendQuestion(roomId: string, question: string, options: Option[], fallback: string): Promise<string> {
+  async sendQuestion(roomId: string, question: string, options: Option[], fallback: string, extra: ExtraContent = {}): Promise<string> {
     const start = {
       kind: "org.matrix.msc3381.poll.disclosed",
       max_selections: 1,
       question: { "org.matrix.msc1767.text": question, body: question, msgtype: "m.text" },
       answers: options.map((o) => ({ id: o.id, "org.matrix.msc1767.text": o.label })),
     };
-    const content = { "org.matrix.msc3381.poll.start": start, "org.matrix.msc1767.text": fallback, body: fallback };
+    const content = { ...extra, "org.matrix.msc3381.poll.start": start, "org.matrix.msc1767.text": fallback, body: fallback };
     const r = await this.client.sendEvent(roomId, "org.matrix.msc3381.poll.start" as any, content as any);
     this.persist.set(`poll:${r.event_id}`, JSON.stringify(options));
     return r.event_id;
@@ -215,6 +232,48 @@ export class BipeSide {
   questionOptions(eventId: string): Option[] | null {
     const s = this.persist.get(`poll:${eventId}`);
     return s ? JSON.parse(s) : null;
+  }
+
+  /**
+   * The newest `limit` messages of a room, oldest first, decrypted by the bridge device (bipe#437).
+   * Reads back through the room history when the live timeline has fewer. Nothing is stored.
+   */
+  async recentMessages(roomId: string, limit: number): Promise<RecentMessage[]> {
+    const room = this.client.getRoom(roomId);
+    if (!room) return [];
+    const relevant = (ev: sdk.MatrixEvent) => {
+      const t = ev.getType();
+      return t === "m.room.message" || t === "m.room.encrypted" || t.endsWith("poll.start") || t.endsWith("poll.response");
+    };
+    for (let i = 0; i < 5; i++) {
+      const events = room.getLiveTimeline().getEvents();
+      if (events.filter(relevant).length >= limit) break;
+      const before = events.length;
+      await this.client.scrollback(room, Math.max(limit, 20));
+      if (room.getLiveTimeline().getEvents().length === before) break;
+    }
+    const out: RecentMessage[] = [];
+    for (const ev of room.getLiveTimeline().getEvents()) {
+      if (!relevant(ev)) continue;
+      await this.client.decryptEventIfNeeded(ev);
+      const sender = ev.getSender() ?? "";
+      const base = { id: ev.getId() ?? "", at: new Date(ev.getTs()).toISOString(), from: sender === this.cfg.userId ? ("company" as const) : ("customer" as const), sender };
+      const type = ev.getType();
+      const content = ev.getContent();
+      if (type === "m.room.message" && typeof content.body === "string") out.push({ ...base, text: content.body });
+      else if (type.endsWith("poll.start")) {
+        const start = content["org.matrix.msc3381.poll.start"] ?? content["m.poll.start"] ?? content["m.poll"];
+        const text = start?.question?.body ?? start?.question?.["org.matrix.msc1767.text"] ?? content.body ?? "";
+        const options = Array.isArray(start?.answers) ? start.answers.map((a: any) => String(a?.["org.matrix.msc1767.text"] ?? a?.id ?? "")) : [];
+        out.push({ ...base, question: { text: String(text), options } });
+      } else if (type.endsWith("poll.response")) {
+        const rel = content["m.relates_to"]?.event_id;
+        const ids: string[] = (content["m.poll.response"]?.answers ?? content["org.matrix.msc3381.poll.response"]?.answers ?? []).map(String);
+        const known = rel ? this.questionOptions(rel) : null;
+        out.push({ ...base, answer: { question: String(rel ?? ""), options: ids.map((id) => known?.find((o) => o.id === id)?.label ?? id) } });
+      }
+    }
+    return out.slice(-limit);
   }
 
   displayName(roomId: string, userId: string): string | null {

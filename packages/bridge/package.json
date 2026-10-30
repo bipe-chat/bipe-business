@@ -3,7 +3,9 @@
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "build": "tsc -p .",
     "start": "node dist/src/server.js",
@@ -11,6 +13,7 @@
   },
   "dependencies": {
     "@hono/node-server": "1.19.17",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "hono": "4.13.13",
     "matrix-js-sdk": "43.0.0",
     "zod": "4.6.6"
