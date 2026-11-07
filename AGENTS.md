@@ -6,7 +6,7 @@ The business bridge and inbox (ADRs 0069, 0078, 0079, 0081, 0082 in `../bipe/doc
 - Green gate: `pnpm build && pnpm test`. The bridge's end-to-end test runs only with `BIPE_TEST_HS` set (README).
 - Never store chat content in the bridge database. Store only what the inbox needs to route: IDs, times, assignee, status, tags, notes, audit (event IDs, never text).
 - Never log message text, tokens, passwords, the recovery key or the backup key.
-- The company writes only to customers who wrote first (no cold messages). Templates are utility or authentication only; marketing is refused (ADR 0037).
+- The company writes only to customers who wrote first (no cold messages). Templates are utility or authentication only; marketing is refused (ADR 0037). Ofertas (ADR 0270) is a separate opt-in product and is not a template.
 - The API for the company's own systems (`POST /v1/messages`, the signed webhook) is Bipe's own design (ADR 0082). Change it only with an ADR.
 - No closed messaging platform's API, SDK, login or tracking pixel, and no claim of compatibility with one, in code, comments, docs or commit messages (ADR 0082). This repo will be opened.
 - Bipe contacts are shown by name and Matrix ID, never by phone number (ADR 0015, ADR 0063).
