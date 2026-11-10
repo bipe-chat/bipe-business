@@ -276,10 +276,6 @@ export class BipeSide {
     return out.slice(-limit);
   }
 
-  displayName(roomId: string, userId: string): string | null {
-    return this.client.getRoom(roomId)?.getMember(userId)?.name ?? null;
-  }
-
   private async handleTimeline(ev: sdk.MatrixEvent, room: sdk.Room) {
     await this.client.decryptEventIfNeeded(ev);
     const lastTs = Number(this.persist.get("last_ts") ?? 0);

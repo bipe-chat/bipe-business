@@ -50,6 +50,15 @@ export type Config = {
   sessionDays: number;
 };
 
+/** A whole number setting. A value that is not one stops the bridge at start. */
+function num(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number): number {
+  const raw = env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(`invalid setting ${name}: a whole number from ${min} to ${max}, not "${raw}"`);
+  return n;
+}
+
 function req(env: NodeJS.ProcessEnv, name: string): string {
   const v = env[name];
   if (!v) throw new Error(`missing setting ${name}`);
@@ -97,7 +106,7 @@ export function parseMcpMode(raw: string | undefined): McpMode {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
-    port: Number(env.PORT ?? 8080),
+    port: num(env, "PORT", 8080, 1, 65535),
     dbPath: env.BRIDGE_DB ?? "bridge.sqlite",
     publicUrl: req(env, "BRIDGE_PUBLIC_URL").replace(/\/$/, ""),
     apiUrl: (env.BIPE_API_URL ?? "https://api.bipe.net.br").replace(/\/$/, ""),
@@ -113,14 +122,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     outboundWebhook: env.BRIDGE_WEBHOOK_URL
       ? { url: env.BRIDGE_WEBHOOK_URL, secret: req(env, "BRIDGE_WEBHOOK_SECRET") }
       : null,
-    sessionDays: Number(env.BRIDGE_SESSION_DAYS ?? 7),
+    sessionDays: num(env, "BRIDGE_SESSION_DAYS", 7, 1, 365),
   };
 }
 
 function mcpConfig(env: NodeJS.ProcessEnv): Config["mcp"] {
   const mode = parseMcpMode(env.BRIDGE_MCP);
-  const port = Number(env.BRIDGE_MCP_PORT ?? 8081);
-  const mainPort = Number(env.PORT ?? 8080);
+  const port = num(env, "BRIDGE_MCP_PORT", 8081, 1, 65535);
+  const mainPort = num(env, "PORT", 8080, 1, 65535);
   return {
     mode,
     port,

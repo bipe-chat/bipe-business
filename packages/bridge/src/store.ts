@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   last_outbound_at INTEGER,
   first_response_at INTEGER
 );
+CREATE INDEX IF NOT EXISTS conversations_contact ON conversations(contact);
 CREATE TABLE IF NOT EXISTS notes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
@@ -183,10 +184,16 @@ export class Store {
     return toConversation(this.db.prepare("SELECT * FROM conversations WHERE room_id = ?").get(roomId) as Row);
   }
 
-  listConversations(f: { status?: Status; statuses?: Status[]; assigneeId?: string | null; customerId?: string; limit?: number }): Conversation[] {
+  /** The newest conversation with this Matrix ID. */
+  conversationByContact(contact: string): Conversation | undefined {
+    return toConversation(
+      this.db.prepare("SELECT * FROM conversations WHERE contact = ? ORDER BY COALESCE(last_inbound_at, created_at) DESC LIMIT 1").get(contact) as Row,
+    );
+  }
+
+  listConversations(f: { statuses?: Status[]; assigneeId?: string | null; customerId?: string; limit?: number }): Conversation[] {
     const where: string[] = [];
     const args: (string | number | null)[] = [];
-    if (f.status) (where.push("status = ?"), args.push(f.status));
     if (f.statuses?.length) (where.push(`status IN (${f.statuses.map(() => "?").join(",")})`), args.push(...f.statuses));
     if (f.customerId) (where.push("customer_id = ?"), args.push(f.customerId));
     if (f.assigneeId === null) where.push("assignee_id IS NULL");

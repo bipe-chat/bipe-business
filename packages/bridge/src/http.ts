@@ -340,7 +340,7 @@ export function createApp(bridge: Bridge) {
     const days = Math.min(Math.max(Math.trunc(Number(c.req.query("days") ?? 7)) || 7, 1), 365);
     return c.json({ days, ...store.stats(days * 86_400_000) });
   });
-  app.get("/inbox/audit", manager, (c) => c.json({ audit: store.auditLog(Number(c.req.query("limit") ?? 200)) }));
+  app.get("/inbox/audit", manager, (c) => c.json({ audit: store.auditLog(Math.min(Math.max(Math.trunc(Number(c.req.query("limit") ?? 200)) || 200, 1), 1000)) }));
 
   return app;
 }

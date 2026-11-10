@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { questionFallback, questionProblem, renderTemplate, type Content, type ErrorCode, type Question, type SendRequest, type WebhookEvent } from "./api.js";
 import type { BipeInbound, BipeSide, ExtraContent } from "./matrix.js";
@@ -113,7 +112,7 @@ export class Bridge {
   /** `to`: a Matrix ID, a room ID, or a conversation ID. */
   conversationFor(to: string): Conversation | undefined {
     if (to.startsWith("!")) return this.store.conversationByRoom(to);
-    if (to.startsWith("@") && to.includes(":")) return this.store.listConversations({ limit: 500 }).find((c) => c.contact === to);
+    if (to.startsWith("@") && to.includes(":")) return this.store.conversationByContact(to);
     return this.store.conversation(to);
   }
 
@@ -123,9 +122,5 @@ export class Bridge {
     if (!conv) throw new SendError(404, "not_found", "conversation not found");
     if ("text" in content) throw new SendError(400, "invalid_request", "text is sent by the agent's own device");
     return this.send({ to: conv.id, content }, agentId);
-  }
-
-  id() {
-    return randomUUID();
   }
 }
