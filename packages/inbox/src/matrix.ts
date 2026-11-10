@@ -1,4 +1,4 @@
-// Bipe in the browser: this agent's own device of the company account (ADR 0076).
+// Bipe in the browser: this agent's own device of the company account (ADR 0078).
 // The SDK loads on demand, so the sign-in screen works even when Bipe is slow or down.
 
 import type { MatrixClient, MatrixEvent, Room } from "matrix-js-sdk";
