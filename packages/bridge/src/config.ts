@@ -48,6 +48,12 @@ export type Config = {
   /** Where the bridge sends inbound events for the company's own systems, signed with `Bipe-Signature`. */
   outboundWebhook: null | { url: string; secret: string };
   sessionDays: number;
+  /**
+   * bipe#1375: how many reverse proxies in front of the bridge append to X-Forwarded-For. 0 (the default): the header
+   * is ignored and the login limit keys on the socket address. N: the N-th address from the right, the one the
+   * outermost trusted proxy saw. A client can write any address on the left; it never counts.
+   */
+  trustProxyHops: number;
 };
 
 /** A whole number setting. A value that is not one stops the bridge at start. */
@@ -123,6 +129,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ? { url: env.BRIDGE_WEBHOOK_URL, secret: req(env, "BRIDGE_WEBHOOK_SECRET") }
       : null,
     sessionDays: num(env, "BRIDGE_SESSION_DAYS", 7, 1, 365),
+    trustProxyHops: num(env, "BRIDGE_TRUST_PROXY_HOPS", 0, 0, 5),
   };
 }
 
