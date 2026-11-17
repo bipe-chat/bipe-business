@@ -28,6 +28,8 @@ function setup() {
   const fakeFetch = (async (url: string, init: RequestInit) => {
     calls.push({ url: String(url), init });
     if (String(url) === "http://api.test/v1/handles/caionasc") return new Response(JSON.stringify({ handle: "caionasc", user_id: "@abc123:bipe.net.br" }));
+    if (String(url) === "http://api.test/v1/handles/limite") return new Response("{}", { status: 429 });
+    if (String(url) === "http://api.test/v1/handles/caiu") throw new TypeError("fetch failed");
     if (String(url).startsWith("http://api.test")) return new Response("{}", { status: 404 });
     return new Response("ok", { status: 200 });
   }) as unknown as typeof fetch;
@@ -129,6 +131,12 @@ test("API: @handle resolves through the Bipe API", async () => {
   const missing = await req("/v1/messages", { method: "POST", json: { to: "@ninguem", text: "x" }, token: "tok-1" });
   assert.equal(missing.status, 404);
   assert.equal((await missing.json()).error.code, "unknown_handle");
+  // bipe-chat/bipe#1437: a 429 or a network error is not an unknown handle.
+  for (const to of ["@limite", "@caiu"]) {
+    const r = await req("/v1/messages", { method: "POST", json: { to, text: "x" }, token: "tok-1" });
+    assert.equal(r.status, 503);
+    assert.equal((await r.json()).error.code, "internal");
+  }
 });
 
 test("inbox: queue, take, notes, template from the inbox, roles", async () => {
