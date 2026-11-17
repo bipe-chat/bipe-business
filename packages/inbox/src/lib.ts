@@ -200,6 +200,9 @@ const AUDIT_LABEL: Record<string, string> = {
   "agent.remove": "Removeu pessoa",
   "device.signed": "Aparelho aprovado",
   "device.remove": "Removeu aparelho",
+  // Written by the bridge's device reconcile (revoke.ts, bipe-chat/bipe#1439).
+  "device.expired": "Aparelho expirou",
+  "device.revoked": "Aparelho desconectado",
   "conversation.open": "Conversa nova",
   "conversation.read": "Abriu a conversa",
   "conversation.update": "Mudou a conversa",
