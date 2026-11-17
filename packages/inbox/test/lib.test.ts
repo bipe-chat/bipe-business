@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   addTag,
+  auditLabel,
   buildQuestion,
   contactLabel,
   displayName,
@@ -127,4 +128,9 @@ test("tags", () => {
   assert.deepEqual(addTag(["entrega"], "  troca   de produto "), ["entrega", "troca de produto"]);
   assert.deepEqual(addTag(["entrega"], "Entrega"), ["entrega"]);
   assert.deepEqual(addTag(["entrega"], "   "), ["entrega"]);
+});
+
+test("auditLabel: the bridge's device events have Portuguese labels (bipe#1439)", () => {
+  assert.equal(auditLabel("device.expired"), "Aparelho expirou");
+  assert.equal(auditLabel("device.revoked"), "Aparelho desconectado");
 });
