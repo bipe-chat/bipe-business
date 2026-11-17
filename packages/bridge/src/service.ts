@@ -97,15 +97,22 @@ export class Bridge {
     return this.bipe!.sendQuestion(conv.room_id, q.text, q.options, questionFallback(q), extra);
   }
 
-  /** `@handle` (no server part) becomes the Matrix ID through the Bipe API, with the company account's token. */
+  /**
+   * `@handle` (no server part) becomes the Matrix ID through the Bipe API, with the company account's token.
+   * Only a 404 means the handle is unknown. A network error, a 401, a 429, a 5xx or a body without `user_id` is a
+   * 503 `internal`, so the company's system retries (bipe-chat/bipe#1437).
+   */
   async resolveHandle(to: string): Promise<string> {
     if (!/^@[a-z0-9._]{2,30}$/i.test(to) || !this.bipe) return to;
+    const failed = () => new SendError(503, "internal", `the handle lookup for ${to} failed; try again`);
     const res = await this.fetchImpl(`${this.cfg.apiUrl}/v1/handles/${encodeURIComponent(to.slice(1).toLowerCase())}`, {
       headers: { authorization: `Bearer ${this.bipe.accessToken}` },
     }).catch(() => null);
-    if (!res?.ok) throw new SendError(404, "unknown_handle", `no Bipe account with the handle ${to}`);
-    const body = (await res.json().catch(() => ({}))) as { user_id?: string };
-    if (!body.user_id) throw new SendError(404, "unknown_handle", `no Bipe account with the handle ${to}`);
+    if (!res) throw failed();
+    if (res.status === 404) throw new SendError(404, "unknown_handle", `no Bipe account with the handle ${to}`);
+    if (!res.ok) throw failed();
+    const body = (await res.json().catch(() => ({}))) as { user_id?: unknown };
+    if (typeof body.user_id !== "string" || !body.user_id.startsWith("@")) throw failed();
     return body.user_id;
   }
 
