@@ -1,3 +1,4 @@
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono, type Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { z } from "zod";
@@ -53,20 +54,52 @@ function sameOrigin(c: Context): boolean {
   }
 }
 
-/** Small in-memory limiter: `max` hits per `windowMs` per key. One bridge instance only. */
-class Limiter {
+/**
+ * Small in-memory limiter: `max` hits per `windowMs` per key. One bridge instance only. bipe#1375: at most `maxKeys`
+ * keys. A full map first drops the keys whose hits all expired, then the keys used longest ago.
+ */
+export class Limiter {
   private hits = new Map<string, number[]>();
   constructor(
     private readonly max: number,
     private readonly windowMs: number,
+    private readonly maxKeys = 10_000,
   ) {}
-  ok(key: string): boolean {
-    const now = Date.now();
-    const list = (this.hits.get(key) ?? []).filter((t) => now - t < this.windowMs);
+  get size(): number {
+    return this.hits.size;
+  }
+  ok(key: string, now = Date.now()): boolean {
+    const list = (this.hits.get(key) ?? []).filter((t) => now - t < this.windowMs).slice(-this.max);
     list.push(now);
+    // Delete first, so the Map's order is the order of last use.
+    this.hits.delete(key);
+    if (this.hits.size >= this.maxKeys) this.prune(now);
     this.hits.set(key, list);
     return list.length <= this.max;
   }
+  private prune(now: number): void {
+    for (const [key, list] of this.hits) if (list.every((t) => now - t >= this.windowMs)) this.hits.delete(key);
+    for (const key of this.hits.keys()) {
+      if (this.hits.size < this.maxKeys) break;
+      this.hits.delete(key);
+    }
+  }
+}
+
+/**
+ * bipe#1375: the client address for the login limit. With `trustProxyHops` 0 it is the socket address. With N it is
+ * the N-th address from the right of X-Forwarded-For; a shorter header falls back to the socket address.
+ */
+export function clientAddress(c: Context, trustProxyHops: number): string {
+  let socket = "unknown";
+  try {
+    socket = getConnInfo(c).remote.address ?? "unknown";
+  } catch {
+    // app.request() in tests has no socket.
+  }
+  if (trustProxyHops === 0) return socket;
+  const hops = (c.req.header("x-forwarded-for") ?? "").split(",").map((h) => h.trim()).filter(Boolean);
+  return hops.length >= trustProxyHops ? hops[hops.length - trustProxyHops]! : socket;
 }
 
 const Login = z.object({ email: z.string().email().max(254), password: z.string().min(1).max(512) });
@@ -126,7 +159,7 @@ export function createApp(bridge: Bridge) {
   // ------------------------------------------------------------ inbox: sign-in
   app.post("/inbox/login", async (c) => {
     if (c.req.header(CSRF_HEADER) !== "1" || !sameOrigin(c)) return c.json({ error: "forbidden" }, 403);
-    const ip = c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "local";
+    const ip = clientAddress(c, cfg.trustProxyHops);
     let body: z.infer<typeof Login>;
     try {
       body = Login.parse(await c.req.json());

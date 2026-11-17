@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.js";
-import { createApp, inboxCsp } from "../src/http.js";
+import { createApp, inboxCsp, Limiter } from "../src/http.js";
 import { checkWebhookSignature, hashPassword, newToken } from "../src/secrets.js";
 import { Bridge } from "../src/service.js";
 import { Store } from "../src/store.js";
@@ -315,4 +315,37 @@ test("inbox CSP (bipe#407): no inline script, WebAssembly allowed, homeserver on
   assert.match(csp, /connect-src 'self' https:\/\/matrix.bipe.net.br;/);
   assert.match(csp, /frame-ancestors 'none'/);
   assert.doesNotMatch(csp, /'unsafe-eval'|\*/);
+});
+
+test("login limit (bipe#1375): a spoofed X-Forwarded-For never resets it, and the map stays bounded", async () => {
+  const { app, cfg } = setup();
+  const login = (i: number, xff?: string) =>
+    app.request("/inbox/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-bipe-inbox": "1", ...(xff ? { "x-forwarded-for": xff } : {}) },
+      body: JSON.stringify({ email: `x${i}@loja.com`, password: "wrong-password" }),
+    });
+  // No trusted proxy: the header is ignored, so a new address per try changes nothing.
+  for (let i = 0; i < 10; i++) assert.equal((await login(i, `10.0.0.${i}`)).status, 401);
+  assert.equal((await login(10, "10.9.9.9")).status, 429);
+
+  // One trusted proxy: the right-most address counts. A client-written address on the left does not.
+  const other = setup();
+  other.cfg.trustProxyHops = 1;
+  const otherLogin = (i: number, xff: string) =>
+    other.app.request("/inbox/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-bipe-inbox": "1", "x-forwarded-for": xff },
+      body: JSON.stringify({ email: `y${i}@loja.com`, password: "wrong-password" }),
+    });
+  for (let i = 0; i < 10; i++) assert.equal((await otherLogin(i, `198.51.100.${i}, 203.0.113.7`)).status, 401);
+  assert.equal((await otherLogin(10, "198.51.100.99, 203.0.113.7")).status, 429);
+  assert.equal((await otherLogin(11, "203.0.113.8")).status, 401, "another real client has its own bucket");
+  assert.equal(cfg.trustProxyHops, 0);
+
+  const limiter = new Limiter(2, 1000, 3);
+  for (let i = 0; i < 50; i++) limiter.ok(`k${i}`, 5000);
+  assert.ok(limiter.size <= 3, "the key count stays at the cap");
+  assert.equal(limiter.ok("k49", 5000), true);
+  assert.equal(limiter.ok("k49", 5000), false, "a recent key keeps its hits");
 });
