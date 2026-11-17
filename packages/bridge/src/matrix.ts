@@ -210,6 +210,17 @@ export class BipeSide {
     await this.client.joinRoom(roomId);
   }
 
+  /** Whether the room has this event. False on a 404; throws on other failures. */
+  async hasEvent(roomId: string, eventId: string): Promise<boolean> {
+    try {
+      await this.client.fetchRoomEvent(roomId, eventId);
+      return true;
+    } catch (e: any) {
+      if (e?.httpStatus === 404) return false;
+      throw e;
+    }
+  }
+
   async sendText(roomId: string, body: string, extra: ExtraContent = {}): Promise<string> {
     const r = await this.client.sendEvent(roomId, sdk.EventType.RoomMessage, { ...extra, msgtype: sdk.MsgType.Text, body } as any);
     return r.event_id;

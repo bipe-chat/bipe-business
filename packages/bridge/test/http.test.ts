@@ -43,9 +43,14 @@ function setup() {
       this.handler = h;
     },
     async join() {},
-    async sendText(room: string, body: string) {
+    async sendText(room: string, body: string, extra: Record<string, unknown> = {}) {
       sent.push(`${room} ${body}`);
+      this.lastExtra = extra;
       return `$ev${++n}`;
+    },
+    lastExtra: {} as Record<string, unknown>,
+    async hasEvent(room: string, eventId: string) {
+      return room === "!room:bipe.net.br" && eventId === "$pergunta";
     },
     async sendQuestion(room: string, _q: string, options: { id: string; label: string }[], fallback: string) {
       sent.push(`${room} ${fallback}`);
@@ -119,6 +124,19 @@ test("API: token, customer must write first, text, question, answer to the webho
   assert.equal((await bad.json()).error.code, "invalid_request");
   const noTpl = await req("/v1/messages", { method: "POST", json: { to: "!r:bipe.net.br", template: { name: "nada", language: "pt-BR" } }, token: "tok-1" });
   assert.equal((await noTpl.json()).error.code, "unknown_template");
+});
+
+test("API: reply_to sends a reply to a message of the same conversation (bipe#1438)", async () => {
+  const { req, store, bipe } = setup();
+  store.upsertConversation("!room:bipe.net.br", "@abc123:bipe.net.br", "Caio");
+  const ok = await req("/v1/messages", { method: "POST", json: { to: "!room:bipe.net.br", reply_to: "$pergunta", text: "Sim" }, token: "tok-1" });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(bipe.lastExtra, { "m.relates_to": { "m.in_reply_to": { event_id: "$pergunta" } } });
+  const other = await req("/v1/messages", { method: "POST", json: { to: "!room:bipe.net.br", reply_to: "$outra", text: "Sim" }, token: "tok-1" });
+  assert.equal(other.status, 400);
+  assert.equal((await other.json()).error.code, "invalid_request");
+  const bad = await req("/v1/messages", { method: "POST", json: { to: "!room:bipe.net.br", reply_to: "nao-e-evento", text: "Sim" }, token: "tok-1" });
+  assert.equal(bad.status, 400);
 });
 
 test("API: @handle resolves through the Bipe API", async () => {

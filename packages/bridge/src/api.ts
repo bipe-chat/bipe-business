@@ -35,7 +35,8 @@ export const Content = z.union([
 export type Content = z.infer<typeof Content>;
 
 /** `to`: the customer's @handle, Matrix ID, room ID, or the inbox conversation ID. */
-export const SendRequest = z.object({ to: z.string().min(1).max(255), reply_to: z.string().max(255).optional() }).loose().transform((v, ctx) => {
+/** `reply_to`: the event ID of a message in the same conversation; the message is sent as a reply to it (bipe-chat/bipe#1438). */
+export const SendRequest = z.object({ to: z.string().min(1).max(255), reply_to: z.string().regex(/^\$\S{1,254}$/).optional() }).loose().transform((v, ctx) => {
   const { to, reply_to, ...rest } = v;
   const c = Content.safeParse(rest);
   if (!c.success) {
