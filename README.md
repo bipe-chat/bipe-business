@@ -36,6 +36,7 @@ Content-Type: application/json
   - `text`: a string.
   - `template`: `{ "name", "language", "params": [] }`, from the bridge's template registry. Utility and authentication only (ADR 0037). `params` fill `{1}`, `{2}`.
   - `question`: `{ "text", "options": [{ "id", "label", "detail"? }] }`, 2 to 10 options (ADR 0081). The customer sees a single-choice poll.
+- `reply_to` (optional): the event ID of a message in the same conversation. The message goes as a reply to it. An event ID from another conversation gets `invalid_request`.
 - Answer: `{ "id": "<event ID>", "conversation": "<conversation ID>", "customer": "<Matrix ID>" }`.
 - Errors: `{ "error": { "code", "message" } }`. Codes: `unauthorized`, `invalid_request`, `unknown_handle`, `customer_must_write_first`, `unknown_template`, `invalid_question`, `not_found`, `internal`. A 503 `internal` (for example a failed @handle lookup) is safe to retry.
 

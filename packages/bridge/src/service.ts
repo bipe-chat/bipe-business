@@ -75,10 +75,20 @@ export class Bridge {
     const conv = this.conversationFor(await this.resolveHandle(req.to));
     // No cold messages: a company writes only to a customer who wrote first (ADR 0016, ADR 0037).
     if (!conv) throw new SendError(400, "customer_must_write_first", "no conversation with this customer: the customer must write first");
+    if (req.reply_to) extra = { ...extra, ...(await this.replyTo(conv, req.reply_to)) };
     const id = await this.sendContent(conv, req.content, extra);
     this.store.markOutbound(conv.id);
     if (agentId) this.store.audit("message.send", { agentId, conversationId: conv.id });
     return { id, conversation: conv.id, customer: conv.contact };
+  }
+
+  /** The reply relation for `reply_to`, after a check that the event is in the conversation's room (bipe-chat/bipe#1438). */
+  private async replyTo(conv: Conversation, eventId: string): Promise<ExtraContent> {
+    const found = await this.bipe!.hasEvent(conv.room_id, eventId).catch(() => {
+      throw new SendError(503, "internal", "the reply_to check failed; try again");
+    });
+    if (!found) throw new SendError(400, "invalid_request", "reply_to is not a message of this conversation");
+    return { "m.relates_to": { "m.in_reply_to": { event_id: eventId } } };
   }
 
   private async sendContent(conv: Conversation, c: Content, extra: ExtraContent): Promise<string> {
